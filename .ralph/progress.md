@@ -5,6 +5,40 @@ Started: 2026年04月27日 16:05:15
 - (add reusable patterns here)
 
 ---
+
+## [2026-04-27 18:25:15 +08:00] - US-007: Generate from a single selected reference image
+Thread:
+Run: 20260427-180400-335 (iteration 1)
+Run log: E:/gpt-image-canvas/.ralph/runs/run-20260427-180400-335-iter-1.log
+Run summary: E:/gpt-image-canvas/.ralph/runs/run-20260427-180400-335-iter-1.md
+- Guardrails reviewed: yes
+- No-commit run: false
+- Commit: 88f6bc6 Implement reference image generation
+- Post-commit status: `clean`
+- Verification:
+  - Command: `pnpm typecheck` -> PASS
+  - Command: `pnpm build` -> PASS
+  - Command: Chrome DevTools browser verification at `http://127.0.0.1:5174/` -> PASS (zero/multiple selections showed disabled Chinese hints; a single uploaded canvas image enabled reference mode; edit submit reached missing `OPENAI_API_KEY` response)
+- Files changed:
+  - .agents/tasks/prd-gpt-image-canvas.json
+  - .ralph/activity.log
+  - .ralph/progress.md
+  - apps/api/src/image-generation.ts
+  - apps/api/src/image-provider.ts
+  - apps/api/src/index.ts
+  - apps/web/src/App.tsx
+- What was implemented
+  - Added persisted `/api/images/edit` generation using the existing batch concurrency, asset save, SQLite generation record, and output persistence flow.
+  - Added selected tldraw image detection in the AI panel with Chinese ready/disabled hints for zero, multiple, non-image, and unreadable selections.
+  - Supported readable user-added canvas images by fetching the selected image asset/blob into a data URL before edit submission, with a 20MB reference image limit.
+  - Recorded `referenceAssetId` for generated local assets by preserving local asset metadata and parsing `/api/assets/:id` URLs.
+  - Reused the text-to-image grid insertion flow for edit outputs and switched the submit button into reference generation mode when exactly one image is selected.
+  - Security/performance/regression review: no secrets or authorization headers are logged; invalid local reference IDs are rejected before persistence; selected image reads are bounded to 20MB; existing text-to-image, autosave, and validation behavior still pass typecheck/build and browser smoke.
+- **Learnings for future iterations:**
+  - tldraw selection changes are most reliable when the app listens to both store changes and the editor `change` event; store-only listeners missed the media insertion selection in browser verification.
+  - Browser verification can upload a local image through the tldraw media button and confirm the AI panel reference state without live OpenAI credentials.
+  - Vite may auto-select port `5174` when another service already owns `5173`; check the dev log before navigating.
+---
 ## [2026-04-27 17:17:10 +08:00] - US-004: Autosave and restore the tldraw project
 Thread:
 Run: 20260427-170454-1395 (iteration 1)

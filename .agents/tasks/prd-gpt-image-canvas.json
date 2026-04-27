@@ -216,7 +216,7 @@
     {
       "id": "US-003",
       "title": "Create React tldraw workspace shell",
-      "status": "in_progress",
+      "status": "done",
       "dependsOn": [
         "US-001",
         "US-002"
@@ -234,13 +234,13 @@
         "Verification: pnpm typecheck and pnpm build pass."
       ],
       "startedAt": "2026-04-27T08:54:43.603864+00:00",
-      "completedAt": null,
-      "updatedAt": "2026-04-27T08:54:43.603864+00:00"
+      "completedAt": "2026-04-27T09:04:23.874699+00:00",
+      "updatedAt": "2026-04-27T09:04:23.874699+00:00"
     },
     {
       "id": "US-004",
       "title": "Autosave and restore the tldraw project",
-      "status": "open",
+      "status": "in_progress",
       "dependsOn": [
         "US-002",
         "US-003"
@@ -255,7 +255,10 @@
         "Negative case: if the API save fails, the UI shows a non-blocking Chinese error and keeps the current canvas intact.",
         "Browser verification: create a shape, refresh, and confirm it restores.",
         "Verification: pnpm typecheck and pnpm build pass."
-      ]
+      ],
+      "startedAt": "2026-04-27T09:04:55.068960+00:00",
+      "completedAt": null,
+      "updatedAt": "2026-04-27T09:04:55.068960+00:00"
     },
     {
       "id": "US-005",

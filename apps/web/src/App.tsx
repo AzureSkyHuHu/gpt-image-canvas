@@ -1,12 +1,15 @@
 import {
+  AlertTriangle,
+  CheckCircle2,
   ChevronDown,
+  Cloud,
   Loader2,
   Sparkles,
   Square,
   XCircle
 } from "lucide-react";
-import { useMemo, useState } from "react";
-import { Tldraw } from "tldraw";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Tldraw, type Editor, type TLEditorSnapshot, type TLStoreSnapshot } from "tldraw";
 import {
   GENERATION_COUNTS,
   IMAGE_QUALITIES,
@@ -19,9 +22,15 @@ import {
   type GenerationCount,
   type ImageQuality,
   type OutputFormat,
+  type ProjectState,
   type SizePreset,
   type StylePresetId
 } from "@gpt-image-canvas/shared";
+
+const AUTOSAVE_DEBOUNCE_MS = 1200;
+
+type PersistedSnapshot = TLEditorSnapshot | TLStoreSnapshot;
+type SaveStatus = "loading" | "saved" | "pending" | "saving" | "error";
 
 const qualityLabels: Record<ImageQuality, string> = {
   auto: "自动",
@@ -79,6 +88,42 @@ function sizeValidationMessage(width: number, height: number): string {
   return `宽高必须是 ${MIN_IMAGE_DIMENSION}-${MAX_IMAGE_DIMENSION}px 内的整数，且总像素不超过 4096 x 4096。`;
 }
 
+function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function saveStatusLabel(status: SaveStatus): string {
+  switch (status) {
+    case "loading":
+      return "正在载入";
+    case "pending":
+      return "待保存";
+    case "saving":
+      return "保存中";
+    case "error":
+      return "保存失败";
+    case "saved":
+    default:
+      return "已保存";
+  }
+}
+
+function SaveStatusIcon({ status }: { status: SaveStatus }) {
+  if (status === "saving" || status === "loading") {
+    return <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />;
+  }
+
+  if (status === "error") {
+    return <AlertTriangle className="size-3.5" aria-hidden="true" />;
+  }
+
+  if (status === "saved") {
+    return <CheckCircle2 className="size-3.5" aria-hidden="true" />;
+  }
+
+  return <Cloud className="size-3.5" aria-hidden="true" />;
+}
+
 export function App() {
   const [prompt, setPrompt] = useState("");
   const [stylePreset, setStylePreset] = useState<StylePresetId>("none");
@@ -90,6 +135,12 @@ export function App() {
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("png");
   const [isGenerating, setIsGenerating] = useState(false);
   const [hasSubmitted, setHasSubmitted] = useState(false);
+  const [isProjectLoaded, setIsProjectLoaded] = useState(false);
+  const [projectSnapshot, setProjectSnapshot] = useState<PersistedSnapshot | undefined>();
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("loading");
+  const [saveError, setSaveError] = useState("");
+  const saveTimerRef = useRef<number | undefined>();
+  const saveRequestRef = useRef(0);
 
   const trimmedPrompt = prompt.trim();
   const promptValidationMessage = trimmedPrompt ? "" : "请输入提示词后再生成。";
@@ -101,6 +152,102 @@ export function App() {
     () => SIZE_PRESETS.find((preset) => preset.id === sizePresetId) ?? SIZE_PRESETS[0],
     [sizePresetId]
   );
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadProject(): Promise<void> {
+      setSaveStatus("loading");
+      setSaveError("");
+
+      try {
+        const response = await fetch("/api/project", {
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          throw new Error(`Project load failed with ${response.status}`);
+        }
+
+        const project = (await response.json()) as ProjectState;
+        if (isPersistedSnapshot(project.snapshot)) {
+          setProjectSnapshot(project.snapshot);
+        }
+        setSaveStatus("saved");
+      } catch {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setSaveStatus("error");
+        setSaveError("无法载入已保存项目，将使用空白画布。");
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsProjectLoaded(true);
+        }
+      }
+    }
+
+    void loadProject();
+
+    return () => {
+      controller.abort();
+    };
+  }, []);
+
+  const handleEditorMount = useCallback((editor: Editor) => {
+    async function saveProject(): Promise<void> {
+      const requestId = saveRequestRef.current + 1;
+      saveRequestRef.current = requestId;
+      setSaveStatus("saving");
+      setSaveError("");
+
+      try {
+        const response = await fetch("/api/project", {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            snapshot: editor.getSnapshot()
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`Project save failed with ${response.status}`);
+        }
+
+        if (saveRequestRef.current === requestId) {
+          setSaveStatus("saved");
+        }
+      } catch {
+        if (saveRequestRef.current === requestId) {
+          setSaveStatus("error");
+          setSaveError("自动保存失败，当前画布已保留，请稍后继续编辑。");
+        }
+      }
+    }
+
+    const removeListener = editor.store.listen(
+      () => {
+        window.clearTimeout(saveTimerRef.current);
+        setSaveStatus("pending");
+        setSaveError("");
+        saveTimerRef.current = window.setTimeout(() => {
+          void saveProject();
+        }, AUTOSAVE_DEBOUNCE_MS);
+      },
+      {
+        source: "user",
+        scope: "document"
+      }
+    );
+
+    return () => {
+      window.clearTimeout(saveTimerRef.current);
+      removeListener();
+    };
+  }, []);
 
   function selectScenePreset(nextPresetId: string): void {
     const preset = SIZE_PRESETS.find((item) => item.id === nextPresetId);
@@ -144,7 +291,11 @@ export function App() {
         aria-label="tldraw 创作画布"
         data-testid="canvas-shell"
       >
-        <Tldraw />
+        {isProjectLoaded ? (
+          <Tldraw snapshot={projectSnapshot} onMount={handleEditorMount} />
+        ) : (
+          <div className="flex h-full items-center justify-center text-sm text-neutral-500">正在载入画布...</div>
+        )}
       </section>
 
       <aside
@@ -152,14 +303,32 @@ export function App() {
         data-testid="ai-panel"
       >
         <div className="border-b border-neutral-200 px-5 py-4">
-          <div className="flex items-center gap-2 text-sm font-medium text-neutral-500">
-            <Sparkles className="size-4 text-blue-600" aria-hidden="true" />
-            AI 图像工作台
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-neutral-500">
+              <Sparkles className="size-4 text-blue-600" aria-hidden="true" />
+              AI 图像工作台
+            </div>
+            <div
+              className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium ${
+                saveStatus === "error" ? "bg-red-50 text-red-700" : "bg-neutral-100 text-neutral-600"
+              }`}
+              data-testid="save-status"
+              role="status"
+            >
+              <SaveStatusIcon status={saveStatus} />
+              {saveStatusLabel(saveStatus)}
+            </div>
           </div>
           <h1 className="mt-1 text-xl font-semibold text-neutral-950">专业画布生成</h1>
         </div>
 
         <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
+          {saveError ? (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" data-testid="save-error">
+              {saveError}
+            </p>
+          ) : null}
+
           <label className="block">
             <span className="control-label">提示词</span>
             <textarea

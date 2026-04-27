@@ -10,7 +10,7 @@
     "moduleResolution": "NodeNext",
     "baseUrl": "../..",
     "paths": {
-      "@gpt-image-canvas/shared": ["packages/shared/dist/index.d.ts"]
+      "@gpt-image-canvas/shared": ["packages/shared/dist/index"]
     },
     "types": ["node"]
   },

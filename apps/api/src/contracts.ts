@@ -22,6 +22,7 @@ export type {
   GenerationCount,
   GenerationOutput,
   GenerationRecord,
+  GenerationResponse,
   GenerationStatus,
   ImageMode,
   ImageQuality,

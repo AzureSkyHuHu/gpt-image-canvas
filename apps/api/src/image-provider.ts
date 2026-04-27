@@ -7,6 +7,8 @@ import {
 } from "./contracts.js";
 
 export interface ImageProviderInput {
+  originalPrompt: string;
+  presetId: string;
   prompt: string;
   size: ImageSize;
   sizeApiValue: string;
@@ -153,7 +155,10 @@ class OpenAICompatibleImageProvider implements ImageProvider {
 
     try {
       response = await fetch(`${this.config.baseUrl}${path}`, init);
-    } catch {
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
       throw new ProviderError("upstream_failure", "上游图像服务请求失败，请稍后重试。", 502);
     }
 
@@ -171,6 +176,10 @@ class OpenAICompatibleImageProvider implements ImageProvider {
 
 function normalizeBaseUrl(value: string | undefined): string {
   return (value?.trim() || DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, "");
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function normalizeProviderResponse(response: OpenAIImageResponse, sizeApiValue: string): ProviderResult {

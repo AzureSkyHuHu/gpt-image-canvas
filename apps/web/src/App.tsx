@@ -9,7 +9,16 @@ import {
   XCircle
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Tldraw, type Editor, type TLEditorSnapshot, type TLStoreSnapshot } from "tldraw";
+import {
+  Tldraw,
+  type Editor,
+  type TLAsset,
+  type TLAssetId,
+  type TLEditorSnapshot,
+  type TLImageShape,
+  type TLShapeId,
+  type TLStoreSnapshot
+} from "tldraw";
 import {
   GENERATION_COUNTS,
   IMAGE_QUALITIES,
@@ -20,6 +29,9 @@ import {
   STYLE_PRESETS,
   validateImageSize,
   type GenerationCount,
+  type GenerationRecord,
+  type GenerationResponse,
+  type GeneratedAsset,
   type ImageQuality,
   type OutputFormat,
   type ProjectState,
@@ -92,6 +104,104 @@ function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isGenerationResponse(value: unknown): value is GenerationResponse {
+  return typeof value === "object" && value !== null && "record" in value;
+}
+
+function createTldrawAssetId(assetId: string): TLAssetId {
+  return `asset:${assetId}` as TLAssetId;
+}
+
+function createTldrawShapeId(): TLShapeId {
+  return `shape:${crypto.randomUUID()}` as TLShapeId;
+}
+
+function displaySize(asset: GeneratedAsset): { width: number; height: number } {
+  const scale = Math.min(1, 340 / asset.width, 300 / asset.height);
+  return {
+    width: Math.round(asset.width * scale),
+    height: Math.round(asset.height * scale)
+  };
+}
+
+function insertGeneratedImages(editor: Editor, record: GenerationRecord): number {
+  const successfulAssets = record.outputs.flatMap((output) => (output.status === "succeeded" && output.asset ? [output.asset] : []));
+  if (successfulAssets.length === 0) {
+    return 0;
+  }
+
+  const placements = successfulAssets.map((asset) => ({
+    asset,
+    assetId: createTldrawAssetId(asset.id),
+    shapeId: createTldrawShapeId(),
+    size: displaySize(asset)
+  }));
+  const columns = placements.length === 1 ? 1 : 2;
+  const rows = Math.ceil(placements.length / columns);
+  const gap = 48;
+  const cellWidth = Math.max(...placements.map((placement) => placement.size.width));
+  const cellHeight = Math.max(...placements.map((placement) => placement.size.height));
+  const gridWidth = columns * cellWidth + (columns - 1) * gap;
+  const gridHeight = rows * cellHeight + (rows - 1) * gap;
+  const viewport = editor.getViewportPageBounds();
+  const originX = viewport.center.x - gridWidth / 2;
+  const originY = viewport.center.y - gridHeight / 2;
+
+  const assets = placements.map<TLAsset>((placement) => ({
+    id: placement.assetId,
+    typeName: "asset",
+    type: "image",
+    props: {
+      src: placement.asset.url,
+      w: placement.asset.width,
+      h: placement.asset.height,
+      name: placement.asset.fileName,
+      mimeType: placement.asset.mimeType,
+      isAnimated: false
+    },
+    meta: {}
+  }));
+  const shapes = placements.map((placement, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    const x = originX + column * (cellWidth + gap) + (cellWidth - placement.size.width) / 2;
+    const y = originY + row * (cellHeight + gap) + (cellHeight - placement.size.height) / 2;
+
+    return {
+      id: placement.shapeId,
+      type: "image",
+      x,
+      y,
+      props: {
+        assetId: placement.assetId,
+        w: placement.size.width,
+        h: placement.size.height,
+        url: placement.asset.url,
+        playing: true,
+        crop: null,
+        flipX: false,
+        flipY: false,
+        altText: record.prompt
+      }
+    } satisfies Partial<TLImageShape> & { id: TLShapeId; type: "image" };
+  });
+
+  editor.createAssets(assets);
+  editor.createShapes(shapes);
+  editor.select(...placements.map((placement) => placement.shapeId));
+
+  return placements.length;
+}
+
+async function readErrorMessage(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: { message?: string } };
+    return body.error?.message || `生成请求失败，状态 ${response.status}。`;
+  } catch {
+    return `生成请求失败，状态 ${response.status}。`;
+  }
+}
+
 function saveStatusLabel(status: SaveStatus): string {
   switch (status) {
     case "loading":
@@ -139,6 +249,11 @@ export function App() {
   const [projectSnapshot, setProjectSnapshot] = useState<PersistedSnapshot | undefined>();
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("loading");
   const [saveError, setSaveError] = useState("");
+  const [generationError, setGenerationError] = useState("");
+  const [generationMessage, setGenerationMessage] = useState("");
+  const editorRef = useRef<Editor | null>(null);
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const generationRequestRef = useRef(0);
   const saveTimerRef = useRef<number | undefined>();
   const saveRequestRef = useRef(0);
 
@@ -196,6 +311,8 @@ export function App() {
   }, []);
 
   const handleEditorMount = useCallback((editor: Editor) => {
+    editorRef.current = editor;
+
     async function saveProject(): Promise<void> {
       const requestId = saveRequestRef.current + 1;
       saveRequestRef.current = requestId;
@@ -245,6 +362,9 @@ export function App() {
 
     return () => {
       window.clearTimeout(saveTimerRef.current);
+      if (editorRef.current === editor) {
+        editorRef.current = null;
+      }
       removeListener();
     };
   }, []);
@@ -268,18 +388,88 @@ export function App() {
     setHeight(normalizeDimension(value));
   }
 
-  function submitGeneration(): void {
+  async function submitGeneration(): Promise<void> {
     setHasSubmitted(true);
+    setGenerationError("");
+    setGenerationMessage("");
 
     if (validationMessage) {
       return;
     }
 
+    const editor = editorRef.current;
+    if (!editor) {
+      setGenerationError("画布尚未就绪，请稍后再试。");
+      return;
+    }
+
+    generationAbortRef.current?.abort();
+    const controller = new AbortController();
+    const requestId = generationRequestRef.current + 1;
+    generationRequestRef.current = requestId;
+    generationAbortRef.current = controller;
     setIsGenerating(true);
+
+    try {
+      const response = await fetch("/api/images/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          prompt: trimmedPrompt,
+          presetId: stylePreset,
+          sizePresetId,
+          size: {
+            width,
+            height
+          },
+          quality,
+          outputFormat,
+          count
+        }),
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const body = (await response.json()) as unknown;
+      if (!isGenerationResponse(body)) {
+        throw new Error("生成服务返回了无法识别的结果。");
+      }
+
+      if (controller.signal.aborted || generationRequestRef.current !== requestId) {
+        return;
+      }
+
+      const insertedCount = insertGeneratedImages(editor, body.record);
+      const failedCount = body.record.outputs.filter((output) => output.status === "failed").length;
+      if (insertedCount > 0) {
+        setGenerationMessage(failedCount > 0 ? `已插入 ${insertedCount} 张图像，${failedCount} 张失败。` : `已插入 ${insertedCount} 张图像。`);
+      } else {
+        setGenerationError(body.record.error || "没有可插入的成功图像。");
+      }
+    } catch (error) {
+      if (controller.signal.aborted || generationRequestRef.current !== requestId) {
+        return;
+      }
+
+      setGenerationError(error instanceof Error ? error.message : "生成失败，请稍后重试。");
+    } finally {
+      if (generationRequestRef.current === requestId) {
+        setIsGenerating(false);
+        generationAbortRef.current = null;
+      }
+    }
   }
 
   function cancelGeneration(): void {
+    generationAbortRef.current?.abort();
+    generationRequestRef.current += 1;
     setIsGenerating(false);
+    setGenerationMessage("已取消本次生成。");
   }
 
   const shouldShowValidation = hasSubmitted || !trimmedPrompt || Boolean(dimensionValidationMessage);
@@ -343,6 +533,18 @@ export function App() {
           {shouldShowValidation && validationMessage ? (
             <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700" data-testid="validation-message">
               {validationMessage}
+            </p>
+          ) : null}
+
+          {generationError ? (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" data-testid="generation-error">
+              {generationError}
+            </p>
+          ) : null}
+
+          {generationMessage ? (
+            <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700" data-testid="generation-message">
+              {generationMessage}
             </p>
           ) : null}
 

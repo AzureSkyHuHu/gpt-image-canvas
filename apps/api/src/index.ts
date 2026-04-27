@@ -27,6 +27,7 @@ import {
   type EditImageProviderInput,
   type ImageProviderInput
 } from "./image-provider.js";
+import { readStoredAsset, runTextToImageGeneration } from "./image-generation.js";
 import { getProjectState, saveProjectSnapshot } from "./project-store.js";
 import { serverConfig } from "./runtime.js";
 
@@ -74,6 +75,22 @@ app.get("/api/config", (c) => {
 
 app.get("/api/project", (c) => c.json(getProjectState()));
 
+app.get("/api/assets/:id", async (c) => {
+  const asset = await readStoredAsset(c.req.param("id"));
+  if (!asset) {
+    return c.json(errorResponse("not_found", "找不到请求的图像资源。"), 404);
+  }
+
+  return new Response(new Uint8Array(asset.bytes), {
+    status: 200,
+    headers: {
+      "Cache-Control": "private, max-age=31536000, immutable",
+      "Content-Disposition": `inline; filename="${asset.file.fileName}"`,
+      "Content-Type": asset.file.mimeType
+    }
+  });
+});
+
 app.put("/api/project", async (c) => {
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
@@ -106,7 +123,7 @@ app.post("/api/images/generate", async (c) => {
 
   try {
     const provider = createOpenAICompatibleImageProvider(providerConfig.config);
-    return c.json(await provider.generate(parsed.value, c.req.raw.signal));
+    return c.json(await runTextToImageGeneration(parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {
       return providerErrorJson(c, error);
@@ -281,6 +298,8 @@ function parseBaseImagePayload(input: unknown): ParseResult<ImageProviderInput> 
   return {
     ok: true,
     value: {
+      originalPrompt: prompt.trim(),
+      presetId: stylePreset.value,
       prompt: composePrompt(prompt, stylePreset.value),
       size: resolvedSize.size,
       sizeApiValue: resolvedSize.apiValue,

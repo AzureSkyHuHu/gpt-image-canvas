@@ -288,3 +288,36 @@ Run summary: E:/gpt-image-canvas/.ralph/runs/run-20260427-173521-1078-iter-1.md
   - tldraw image insertion can use stable `asset:` and `shape:` IDs with `editor.createAssets`, `editor.createShapes`, and `editor.getViewportPageBounds().center` for viewport-centered placement.
   - Browser verification can use a headless Chrome DevTools protocol smoke when live credentials are missing; this validates the real Vite UI path and the missing-key API response without exposing secrets.
 ---
+## [2026-04-27 19:11:11 +08:00] - US-008: Add generation history actions
+Thread: 
+Run: 20260427-185536-539 (iteration 1)
+Run log: E:/gpt-image-canvas/.ralph/runs/run-20260427-185536-539-iter-1.log
+Run summary: E:/gpt-image-canvas/.ralph/runs/run-20260427-185536-539-iter-1.md
+- Guardrails reviewed: yes
+- No-commit run: false
+- Commit: e799e0e Add generation history actions
+- Post-commit status: clean
+- Verification:
+  - Command: pnpm typecheck -> PASS
+  - Command: pnpm build -> PASS
+  - Command: git diff --check -> PASS
+  - Command: Browser verification at http://127.0.0.1:5174/ -> PASS (history rendered after refresh, locate worked, rerun submitted and returned missing OPENAI_API_KEY in this environment, download returned attachment, deleted-shape locate showed Chinese not-found message; screenshot E:/gpt-image-canvas/.ralph/runs/us-008-browser-history.png)
+- Files changed:
+  - .agents/tasks/prd-gpt-image-canvas.json
+  - .ralph/activity.log
+  - apps/api/src/image-generation.ts
+  - apps/api/src/index.ts
+  - apps/api/src/project-store.ts
+  - apps/web/src/App.tsx
+  - .ralph/progress.md
+- What was implemented
+  - Added /api/assets/:id/download with attachment disposition for stored assets.
+  - Fixed persisted generation mode so refreshed edit history remains distinguishable.
+  - Loaded recent history into the right panel with prompt excerpt, mode, size, status, created time, output count, and locate/rerun/download actions.
+  - Matched locate actions to existing tldraw image assets via local asset id and showed a Chinese not-found message after canvas deletion.
+  - Rerun reuses prompt, style preset, exact size, quality, format, count, and stored reference asset when present.
+- **Learnings for future iterations:**
+  - /api/project already returned history; US-008 mainly needed UI wiring plus the download route.
+  - Generated canvas assets store the local asset id in tldraw asset meta, which is the reliable bridge from history output to canvas shape.
+  - Browser verification can use ignored local data rows when live credentials are unavailable; do not commit data/assets or SQLite files.
+---

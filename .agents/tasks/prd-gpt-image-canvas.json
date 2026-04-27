@@ -384,7 +384,7 @@
     {
       "id": "US-010",
       "title": "Run final local, Docker, and live API smoke verification",
-      "status": "open",
+      "status": "done",
       "dependsOn": [
         "US-009"
       ],
@@ -399,7 +399,10 @@
         "Example: a user following README can run the app and generate onto the canvas.",
         "Negative case: missing credentials are handled as a runtime configuration problem, not as a build failure.",
         "Verification: final story records commands run, browser findings, Docker findings, and live API smoke status."
-      ]
+      ],
+      "startedAt": "2026-04-27T12:24:59.997597+00:00",
+      "completedAt": "2026-04-27T13:58:49.000000+00:00",
+      "updatedAt": "2026-04-27T13:58:49.000000+00:00"
     }
   ]
 }

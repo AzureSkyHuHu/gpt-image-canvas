@@ -61,3 +61,8 @@
 [2026-04-27 19:18:18] Start work on US-009 Docker Compose packaging
 [2026-04-27 19:25:30] Implemented US-009 Hono static serving and Docker Compose packaging files
 [2026-04-27 19:37:37] Ran US-009 verification: pnpm typecheck/build pass, built server smoke pass, docker compose config pass; docker compose build blocked by Docker Hub metadata timeout
+[2026-04-27 20:25:00] ITERATION 1 start (mode=build story=US-010)
+[2026-04-27 20:26:12] Start US-010 final verification story
+[2026-04-27 20:35:13] Updated US-010 README and AGENTS operational verification notes
+[2026-04-27 21:58:49] Manual recovery for US-010 after Ralph loop stalled during reconnect; live API smoke attempted with configured .env credentials
+[2026-04-27 21:58:49] US-010 verification complete: typecheck/build/browser/download/safe compose config passed; Docker Hub and configured image provider endpoint were unreachable

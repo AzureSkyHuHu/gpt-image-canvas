@@ -5,6 +5,41 @@ Started: 2026年04月27日 16:05:15
 - (add reusable patterns here)
 
 ---
+## [2026-04-27 21:58:49 +08:00] - US-010: Run final local, Docker, and live API smoke verification
+Thread:
+Run: 20260427-202459-1859 (iteration 1)
+Run log: E:/gpt-image-canvas/.ralph/runs/run-20260427-202459-1859-iter-1.log
+Run summary: E:/gpt-image-canvas/.ralph/runs/run-20260427-202459-1859-iter-1.md
+- Guardrails reviewed: yes
+- No-commit run: false
+- Commit: c772b0a Document final verification workflow
+- Post-commit status: clean after follow-up record commit
+- Verification:
+  - Command: `pnpm typecheck` -> PASS
+  - Command: `pnpm build` -> PASS (Vite chunk-size warning only)
+  - Command: Browser verification via Chrome DevTools at the local Vite app -> PASS (canvas and AI panel rendered; autosave/project state reported `history=1`, `shapeCount=1`; screenshot `E:/gpt-image-canvas/.ralph/runs/us-010-browser-initial.png`)
+  - Command: `Invoke-WebRequest http://127.0.0.1:8787/api/assets/browser-history-smoke-asset/download` -> PASS (200, `image/png`, attachment disposition)
+  - Command: Node live text-to-image smoke against `http://127.0.0.1:8890/api/images/generate` with `gpt-image-2` -> BLOCKED (configured provider base host `43.162.89.42` port `8317` was not reachable; API returned a failed generation record with upstream request failure)
+  - Command: Live reference-image smoke -> NOT RUN (requires a successful live text asset; provider endpoint was unavailable)
+  - Command: `Test-NetConnection 43.162.89.42 -Port 8317` -> FAIL (TCP connect failed)
+  - Command: `docker compose config --quiet --no-env-resolution` -> PASS
+  - Command: `docker compose up --build -d` -> BLOCKED (Docker Hub metadata fetch for `node:22-bookworm-slim` failed because `registry-1.docker.io:443` was unreachable)
+  - Command: `git diff --check` -> PASS
+- Files changed:
+  - .agents/tasks/prd-gpt-image-canvas.json
+  - .ralph/activity.log
+  - .ralph/progress.md
+  - AGENTS.md
+  - README.md
+- What was implemented
+  - Updated README with final setup, development, safe Docker validation, local data storage, and troubleshooting notes.
+  - Updated AGENTS with operational verification guidance and a warning that plain `docker compose config` expands `.env` secrets.
+  - Verified the local API, built app, browser canvas/history/download flows, and documented live provider and Docker Hub availability blockers without committing secrets.
+- **Learnings for future iterations:**
+  - With real `.env` credentials present, use `docker compose config --quiet --no-env-resolution`; plain `docker compose config` expands service env files and can print API keys.
+  - Live image smoke should first verify the configured provider host and port; credentials can be present while the OpenAI-compatible endpoint is unreachable.
+  - If Ralph/Codex stalls during reconnect after substantial verification, confirm logs, commits, process tree, and PRD state before manual recovery.
+---
 
 ## [2026-04-27 18:25:15 +08:00] - US-007: Generate from a single selected reference image
 Thread:

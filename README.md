@@ -25,7 +25,16 @@ Open the web app at `http://localhost:5173`.
 
 ## Docker
 
-Docker packaging is planned for a later story. Runtime data and generated assets must stay under `./data` and out of git.
+Docker Compose builds the shared contracts, web app, and API into one image. The Hono API serves both `/api` and the built web bundle from a single localhost port, while SQLite data and generated assets persist in host `./data`.
+
+```powershell
+Copy-Item .env.example .env
+docker compose up --build
+```
+
+Open the app at `http://localhost:8787` by default. Set `PORT` in `.env` before starting Docker Compose to use a different localhost port.
+
+`OPENAI_API_KEY` may be left empty for local boot checks. The app still starts, and generation endpoints return a missing-key JSON error until credentials are configured.
 
 ## Ralph
 

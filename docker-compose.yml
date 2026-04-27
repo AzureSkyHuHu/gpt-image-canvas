@@ -1,0 +1,15 @@
+services:
+  app:
+    build:
+      context: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOST: 0.0.0.0
+      PORT: ${PORT:-8787}
+      DATA_DIR: /app/data
+    ports:
+      - "${PORT:-8787}:${PORT:-8787}"
+    volumes:
+      - ./data:/app/data

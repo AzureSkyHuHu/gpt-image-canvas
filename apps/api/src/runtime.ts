@@ -30,7 +30,8 @@ export const runtimePaths = {
   packageRoot,
   dataDir,
   assetsDir: resolve(dataDir, "assets"),
-  databaseFile: resolve(dataDir, "gpt-image-canvas.sqlite")
+  databaseFile: resolve(dataDir, "gpt-image-canvas.sqlite"),
+  webDistDir: resolve(repoRoot, "apps/web/dist")
 };
 
 export const serverConfig = {

@@ -57,3 +57,7 @@
 [2026-04-27 19:09:17] Verification passed: typecheck, build, browser history locate/rerun/download smoke
 [2026-04-27 19:10:08] Pre-commit audit complete: no secret logging, bounded history query, existing generation and autosave flows reviewed
 [2026-04-27 19:11:45] Updated progress log for US-008
+[2026-04-27 19:17:58] ITERATION 1 start (mode=build story=US-009)
+[2026-04-27 19:18:18] Start work on US-009 Docker Compose packaging
+[2026-04-27 19:25:30] Implemented US-009 Hono static serving and Docker Compose packaging files
+[2026-04-27 19:37:37] Ran US-009 verification: pnpm typecheck/build pass, built server smoke pass, docker compose config pass; docker compose build blocked by Docker Hub metadata timeout

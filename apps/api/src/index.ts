@@ -1,5 +1,7 @@
+import { relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import {
@@ -29,7 +31,7 @@ import {
 } from "./image-provider.js";
 import { getStoredAssetFile, readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "./image-generation.js";
 import { getProjectState, saveProjectSnapshot } from "./project-store.js";
-import { serverConfig } from "./runtime.js";
+import { runtimePaths, serverConfig } from "./runtime.js";
 
 const MAX_PROJECT_SNAPSHOT_BYTES = 10 * 1024 * 1024;
 const MAX_PROJECT_NAME_LENGTH = 120;
@@ -176,6 +178,22 @@ app.post("/api/images/edit", async (c) => {
     throw error;
   }
 });
+
+const webDistRoot = relative(process.cwd(), runtimePaths.webDistDir) || ".";
+
+app.get("/api/*", (c) => c.json(errorResponse("not_found", "Not found."), 404));
+
+app.get("*", serveStatic({ root: webDistRoot }));
+app.get(
+  "*",
+  serveStatic({
+    root: webDistRoot,
+    path: "index.html",
+    onNotFound: () => {
+      console.error(`Built web bundle not found at ${runtimePaths.webDistDir}. Run pnpm build before pnpm start.`);
+    }
+  })
+);
 
 function errorResponse(code: string, message: string): { error: { code: string; message: string } } {
   return {

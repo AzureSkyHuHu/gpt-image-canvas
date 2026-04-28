@@ -403,6 +403,151 @@
       "startedAt": "2026-04-27T12:24:59.997597+00:00",
       "completedAt": "2026-04-27T13:58:49.000000+00:00",
       "updatedAt": "2026-04-27T13:58:49.000000+00:00"
+    },
+    {
+      "id": "US-011",
+      "title": "Optimize text generation main flow",
+      "status": "done",
+      "dependsOn": [
+        "US-010"
+      ],
+      "description": "As a creator, I want text-to-image generation to be the default, clear, and low-friction path so selecting canvas content never accidentally changes my generation mode.",
+      "acceptanceCriteria": [
+        "Add a compact segmented control labelled \u6587\u672c\u751f\u6210 / \u53c2\u8003\u751f\u6210, defaulting to \u6587\u672c\u751f\u6210.",
+        "In text mode, generation must not depend on the selected canvas image and must always call /api/images/generate.",
+        "An empty prompt must not show a warning on initial load; show the Chinese validation message only after the user attempts generation or another invalid field is active.",
+        "When the prompt is empty, show a small set of prompt starter chips; clicking a chip fills the prompt draft.",
+        "Keep the first-screen controls focused on style preset, scene size/custom dimensions, and count; keep quality and output format in the existing advanced section.",
+        "Example: with an image selected on the canvas, text mode still sends a text-to-image request.",
+        "Negative case: clicking generate with an empty prompt shows a clear Chinese validation message and sends no request.",
+        "Browser verification: verify empty prompt behavior, chip fill behavior, button enabled/disabled state, and that text mode uses /api/images/generate.",
+        "Verification: pnpm typecheck and pnpm build pass."
+      ],
+      "startedAt": "2026-04-28T03:48:23.551322+00:00",
+      "completedAt": "2026-04-28T04:01:01.153725+00:00",
+      "updatedAt": "2026-04-28T04:01:01.153725+00:00"
+    },
+    {
+      "id": "US-012",
+      "title": "Build responsive panel and mobile drawer",
+      "status": "done",
+      "dependsOn": [
+        "US-011"
+      ],
+      "description": "As a creator, I want the desktop AI panel to feel polished and the mobile canvas to remain usable so the AI controls never crush the drawing workspace.",
+      "acceptanceCriteria": [
+        "On desktop, set the AI panel width to clamp(380px, 28vw, 440px) and keep the canvas padded by the same responsive width.",
+        "Below 1024px, convert the AI panel to a drawer that is closed by default and does not reduce the canvas width.",
+        "Show a floating AI \u751f\u6210 button on small screens that opens the drawer.",
+        "The drawer must support close button, backdrop click, Escape key, and basic aria attributes such as aria-expanded or aria-modal where appropriate.",
+        "Prevent horizontal scrolling and ensure the bottom CTA does not overlap form content or safe-area insets.",
+        "Example: on a 390px wide viewport, the canvas remains nearly full width before opening the drawer.",
+        "Negative case: closing the drawer must return focusable access to the canvas and must not leave an invisible overlay blocking interaction.",
+        "Browser verification: verify desktop 1440x900 and mobile 390x844 layouts.",
+        "Verification: pnpm typecheck and pnpm build pass."
+      ],
+      "startedAt": "2026-04-28T04:02:06.754747+00:00",
+      "completedAt": "2026-04-28T04:18:56.570650+00:00",
+      "updatedAt": "2026-04-28T04:18:56.570650+00:00"
+    },
+    {
+      "id": "US-013",
+      "title": "Add canvas generation placeholders and loading motion",
+      "status": "done",
+      "dependsOn": [
+        "US-011"
+      ],
+      "description": "As a creator, I want generated images to have visible canvas placeholders while loading so I can see the expected size, count, and placement immediately.",
+      "acceptanceCriteria": [
+        "Add a tldraw custom shape util named generation-placeholder, registered through Tldraw shapeUtils.",
+        "When generation starts for count 1, 2, or 4, create matching placeholder shapes in a centered viewport grid using the target output aspect ratio and display size.",
+        "Loading placeholders show the target dimensions, Chinese generating copy, and a spinner, shimmer, or breathing-border loading animation.",
+        "On success, replace each corresponding placeholder in place with the generated image asset and image shape, preserving placement instead of recalculating the grid.",
+        "On partial failure, replace successful placeholders and keep failed placeholders with a concise Chinese error state.",
+        "On cancel, delete loading placeholders for the canceled request.",
+        "Autosave must filter out placeholders whose status is loading so refresh never restores an eternal loading object; failed placeholders may persist.",
+        "Example: count 4 creates four loading placeholders before the network response resolves.",
+        "Negative case: missing API key creates a failed placeholder state rather than leaving a spinner forever.",
+        "Browser verification: verify success when credentials are available, missing-key failure, cancel cleanup, and refresh behavior.",
+        "Verification: pnpm typecheck and pnpm build pass."
+      ],
+      "startedAt": "2026-04-28T04:19:21.584476+00:00",
+      "completedAt": "2026-04-28T04:51:01.559646+00:00",
+      "updatedAt": "2026-04-28T04:51:01.559646+00:00"
+    },
+    {
+      "id": "US-014",
+      "title": "Make reference generation an explicit mode",
+      "status": "done",
+      "dependsOn": [
+        "US-011",
+        "US-013"
+      ],
+      "description": "As a creator, I want reference generation to be an explicit secondary mode so selecting canvas images does not unexpectedly change the main generation action.",
+      "acceptanceCriteria": [
+        "Only evaluate selected canvas images for generation eligibility when the user has switched to \u53c2\u8003\u751f\u6210 mode.",
+        "In reference mode, zero images, multiple objects, non-image selection, or unreadable image selection show compact Chinese guidance and disable generation.",
+        "When exactly one readable image is selected in reference mode, show its file name and dimensions and submit to /api/images/edit.",
+        "Provide a cancel-reference action that calls editor.selectNone() and returns the reference mode panel to its missing-image state.",
+        "Reference generation must use the same canvas placeholder lifecycle as text generation, including loading, success replacement, partial failure, and cancel cleanup.",
+        "Example: selecting one generated image and switching to \u53c2\u8003\u751f\u6210 enables the generate CTA.",
+        "Negative case: selecting a shape that is not an image must not submit an edit request.",
+        "Browser verification: verify no-image, valid-image, cancel-reference, and reference request path behavior.",
+        "Verification: pnpm typecheck and pnpm build pass."
+      ],
+      "startedAt": "2026-04-28T04:51:34.535135+00:00",
+      "completedAt": "2026-04-28T05:09:11.670Z",
+      "updatedAt": "2026-04-28T05:09:11.670Z"
+    },
+    {
+      "id": "US-015",
+      "title": "Polish history records and status feedback",
+      "status": "done",
+      "dependsOn": [
+        "US-011"
+      ],
+      "description": "As a creator, I want generation history and status feedback to be compact and clear so the panel supports iteration without overwhelming the main prompt flow.",
+      "acceptanceCriteria": [
+        "Show only the latest three generation history records by default, with an expand/collapse affordance for additional records.",
+        "Restyle history records as compact list items preserving prompt excerpt, status, size, output count, created time, locate, rerun, and download actions.",
+        "Keep locate, rerun, and download actions aligned with clear hover, focus, and disabled states.",
+        "Use an inline panel status strip for generation progress, success, validation, and error messages; the main CTA also shows loading copy while generating.",
+        "After successful generation, keep the panel open, select the newly inserted image or images, and update history at the top.",
+        "Example: a long history does not push core prompt controls out of the first screen.",
+        "Negative case: download for records without a successful local asset remains disabled and visually clear.",
+        "Browser verification: verify default three records, expand/collapse, locate, rerun disabled while generating, and download disabled state.",
+        "Verification: pnpm typecheck and pnpm build pass."
+      ],
+      "startedAt": "2026-04-28T05:14:57.278681+00:00",
+      "completedAt": "2026-04-28T05:33:45.563836+00:00",
+      "updatedAt": "2026-04-28T05:33:45.563836+00:00"
+    },
+    {
+      "id": "US-016",
+      "title": "Run final UX verification and Ralph handoff",
+      "status": "done",
+      "dependsOn": [
+        "US-012",
+        "US-013",
+        "US-014",
+        "US-015"
+      ],
+      "description": "As a maintainer, I want final UX regression verification and Ralph progress notes so the incremental UX work is ready to hand off.",
+      "acceptanceCriteria": [
+        "Run pnpm typecheck successfully.",
+        "Run pnpm build successfully.",
+        "Start pnpm dev and browser-verify desktop and mobile layouts.",
+        "Verify text generation mode, reference generation mode, loading placeholders, cancel behavior, failed placeholders, history compaction, and mobile drawer behavior.",
+        "Check the browser console and dev server output for newly introduced runtime errors.",
+        "If real credentials are unavailable, record the missing-key verification result without reading, logging, or committing secrets.",
+        "Append a Ralph progress entry with commands run, browser findings, changed files, and residual risks.",
+        "Example: a user can open the app, type a prompt, see canvas placeholders immediately, and receive either generated images or a clear failed placeholder.",
+        "Negative case: missing credentials are treated as a runtime configuration state, not a build failure.",
+        "Verification: pnpm typecheck, pnpm build, and browser verification pass or are documented with explicit environmental blockers."
+      ],
+      "startedAt": "2026-04-28T05:35:00.881719+00:00",
+      "completedAt": "2026-04-28T05:55:29.719212+00:00",
+      "updatedAt": "2026-04-28T05:55:29.719212+00:00"
     }
   ]
 }

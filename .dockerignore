@@ -1,9 +1,14 @@
 node_modules
 **/node_modules
 .git
+.codex-temp
 .ralph
 data
 .env
+.env.*
+generated
+generated-assets
+assets/generated
 *.log
 *.db
 *.sqlite

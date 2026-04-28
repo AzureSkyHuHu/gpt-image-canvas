@@ -10,6 +10,7 @@ import {
   RotateCcw,
   Sparkles,
   Square,
+  X,
   XCircle
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -20,9 +21,15 @@ import {
   type TLAssetId,
   type TLEditorSnapshot,
   type TLImageShape,
+  type TLShapePartial,
   type TLShapeId,
   type TLStoreSnapshot
 } from "tldraw";
+import {
+  GENERATION_PLACEHOLDER_TYPE,
+  GenerationPlaceholderShapeUtil,
+  type GenerationPlaceholderShape
+} from "./GenerationPlaceholderShape";
 import {
   CUSTOM_SIZE_PRESET_ID,
   GENERATION_COUNTS,
@@ -39,6 +46,7 @@ import {
   type GenerationStatus,
   type GeneratedAsset,
   type ImageQuality,
+  type ImageSize,
   type OutputFormat,
   type ProjectState,
   type ReferenceImageInput,
@@ -47,10 +55,41 @@ import {
 } from "@gpt-image-canvas/shared";
 
 const AUTOSAVE_DEBOUNCE_MS = 1200;
-const MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024;
+const HISTORY_COLLAPSED_LIMIT = 3;
+const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
+const MOBILE_DRAWER_MEDIA_QUERY = "(max-width: 1023px)";
+const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
+const shapeUtils = [GenerationPlaceholderShapeUtil];
+
+const promptStarters = [
+  {
+    label: "产品海报",
+    prompt: "一张高端护肤品产品海报，水面反光，精致布光，留出清晰标题空间"
+  },
+  {
+    label: "室内空间",
+    prompt: "一间安静的现代工作室，清晨自然光，木质家具，干净构图"
+  },
+  {
+    label: "角色头像",
+    prompt: "一个原创角色头像，温暖表情，清爽背景，细腻插画质感"
+  },
+  {
+    label: "城市夜景",
+    prompt: "未来城市夜景，雨后街道，霓虹倒影，电影感光影"
+  }
+] as const;
 
 type PersistedSnapshot = TLEditorSnapshot | TLStoreSnapshot;
 type SaveStatus = "loading" | "saved" | "pending" | "saving" | "error";
+type GenerationMode = "text" | "reference";
+type PanelStatusTone = "progress" | "success" | "warning" | "error";
+
+interface PanelStatus {
+  tone: PanelStatusTone;
+  message: string;
+  testId: "generation-progress" | "generation-message" | "validation-message" | "generation-error";
+}
 
 interface GenerationSubmitInput {
   prompt: string;
@@ -70,6 +109,21 @@ interface GenerationReferenceInput {
   referenceAssetId?: string;
 }
 
+interface GenerationPlaceholderPlacement {
+  id: TLShapeId;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  targetWidth: number;
+  targetHeight: number;
+}
+
+interface ActiveGenerationPlaceholders {
+  requestId: number;
+  placements: GenerationPlaceholderPlacement[];
+}
+
 type ReferenceSelection =
   | {
       status: "none" | "multiple" | "non-image" | "unreadable";
@@ -85,6 +139,11 @@ type ReferenceSelection =
       height: number;
       hint: string;
     };
+
+const missingReferenceSelection: ReferenceSelection = {
+  status: "none",
+  hint: "选择画布中的一张图片后，可用它作为参考生成新图。"
+};
 
 const qualityLabels: Record<ImageQuality, string> = {
   auto: "自动",
@@ -121,7 +180,7 @@ const sizePresetLabels: Record<string, string> = {
 };
 
 const modeLabels: Record<GenerationRecord["mode"], string> = {
-  generate: "文本生成",
+  generate: "提示词生成",
   edit: "参考生成"
 };
 
@@ -132,6 +191,22 @@ const statusLabels: Record<GenerationStatus, string> = {
   partial: "部分完成",
   failed: "失败",
   cancelled: "已取消"
+};
+
+const panelStatusStyles: Record<PanelStatusTone, string> = {
+  progress: "border-blue-200 bg-blue-50 text-blue-800",
+  success: "border-emerald-200 bg-emerald-50 text-emerald-800",
+  warning: "border-amber-200 bg-amber-50 text-amber-800",
+  error: "border-red-200 bg-red-50 text-red-800"
+};
+
+const historyStatusStyles: Record<GenerationStatus, string> = {
+  pending: "bg-blue-50 text-blue-700",
+  running: "bg-blue-50 text-blue-700",
+  succeeded: "bg-emerald-50 text-emerald-700",
+  partial: "bg-amber-50 text-amber-700",
+  failed: "bg-red-50 text-red-700",
+  cancelled: "bg-neutral-100 text-neutral-500"
 };
 
 function sizePresetLabel(preset: SizePreset): string {
@@ -157,7 +232,7 @@ function sizeValidationMessage(width: number, height: number): string {
 }
 
 function generationValidationMessage(promptValue: string, widthValue: number, heightValue: number): string {
-  return promptValue.trim() ? sizeValidationMessage(widthValue, heightValue) : "请输入提示词后再生成。";
+  return promptValue.trim() ? sizeValidationMessage(widthValue, heightValue) : "请输入提示词。";
 }
 
 function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
@@ -166,6 +241,52 @@ function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
 
 function isGenerationResponse(value: unknown): value is GenerationResponse {
   return typeof value === "object" && value !== null && "record" in value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isLoadingGenerationPlaceholderRecord(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    value.typeName === "shape" &&
+    value.type === GENERATION_PLACEHOLDER_TYPE &&
+    isRecord(value.props) &&
+    value.props.status === "loading"
+  );
+}
+
+function filterLoadingPlaceholdersFromStoreSnapshot<TSnapshot>(snapshot: TSnapshot): TSnapshot {
+  if (!isRecord(snapshot) || !isRecord(snapshot.store)) {
+    return snapshot;
+  }
+
+  let removed = false;
+  const nextStore: Record<string, unknown> = {};
+  for (const [id, record] of Object.entries(snapshot.store)) {
+    if (isLoadingGenerationPlaceholderRecord(record)) {
+      removed = true;
+      continue;
+    }
+
+    nextStore[id] = record;
+  }
+
+  return removed ? ({ ...snapshot, store: nextStore } as TSnapshot) : snapshot;
+}
+
+function filterLoadingPlaceholdersFromSnapshot<TSnapshot>(snapshot: TSnapshot): TSnapshot {
+  if (!isRecord(snapshot)) {
+    return snapshot;
+  }
+
+  if (isRecord(snapshot.document)) {
+    const document = filterLoadingPlaceholdersFromStoreSnapshot(snapshot.document);
+    return document === snapshot.document ? snapshot : ({ ...snapshot, document } as TSnapshot);
+  }
+
+  return filterLoadingPlaceholdersFromStoreSnapshot(snapshot);
 }
 
 function coerceStylePresetId(value: string): StylePresetId {
@@ -217,93 +338,230 @@ function createTldrawShapeId(): TLShapeId {
   return `shape:${crypto.randomUUID()}` as TLShapeId;
 }
 
-function displaySize(asset: GeneratedAsset): { width: number; height: number } {
-  const scale = Math.min(1, 340 / asset.width, 300 / asset.height);
+function displaySize(size: ImageSize): { width: number; height: number } {
+  const scale = Math.min(1, 340 / size.width, 300 / size.height);
   return {
-    width: Math.round(asset.width * scale),
-    height: Math.round(asset.height * scale)
+    width: Math.round(size.width * scale),
+    height: Math.round(size.height * scale)
   };
 }
 
-function insertGeneratedImages(editor: Editor, record: GenerationRecord): number {
-  const successfulAssets = record.outputs.flatMap((output) => (output.status === "succeeded" && output.asset ? [output.asset] : []));
-  if (successfulAssets.length === 0) {
-    return 0;
-  }
-
-  const placements = successfulAssets.map((asset) => ({
-    asset,
-    assetId: createTldrawAssetId(asset.id),
-    shapeId: createTldrawShapeId(),
-    size: displaySize(asset)
-  }));
-  const columns = placements.length === 1 ? 1 : 2;
-  const rows = Math.ceil(placements.length / columns);
+function createCenteredPlacements(editor: Editor, countValue: GenerationCount, size: ImageSize): GenerationPlaceholderPlacement[] {
+  const placeholderSize = displaySize(size);
+  const columns = countValue === 1 ? 1 : 2;
+  const rows = Math.ceil(countValue / columns);
   const gap = 48;
-  const cellWidth = Math.max(...placements.map((placement) => placement.size.width));
-  const cellHeight = Math.max(...placements.map((placement) => placement.size.height));
+  const cellWidth = placeholderSize.width;
+  const cellHeight = placeholderSize.height;
   const gridWidth = columns * cellWidth + (columns - 1) * gap;
   const gridHeight = rows * cellHeight + (rows - 1) * gap;
   const viewport = editor.getViewportPageBounds();
   const originX = viewport.center.x - gridWidth / 2;
   const originY = viewport.center.y - gridHeight / 2;
 
-  const assets = placements.map<TLAsset>((placement) => ({
-    id: placement.assetId,
+  return Array.from({ length: countValue }, (_, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+
+    return {
+      id: createTldrawShapeId(),
+      x: originX + column * (cellWidth + gap),
+      y: originY + row * (cellHeight + gap),
+      width: placeholderSize.width,
+      height: placeholderSize.height,
+      targetWidth: size.width,
+      targetHeight: size.height
+    };
+  });
+}
+
+function createGenerationPlaceholders(editor: Editor, input: GenerationSubmitInput, requestId: number): ActiveGenerationPlaceholders {
+  const placements = createCenteredPlacements(editor, input.count, input.size);
+  const placeholderIds = placements.map((placement) => placement.id);
+
+  editor.createShapes<GenerationPlaceholderShape>(
+    placements.map((placement, index) => ({
+      id: placement.id,
+      type: GENERATION_PLACEHOLDER_TYPE,
+      x: placement.x,
+      y: placement.y,
+      props: {
+        w: placement.width,
+        h: placement.height,
+        targetWidth: placement.targetWidth,
+        targetHeight: placement.targetHeight,
+        status: "loading",
+        error: "",
+        requestId: String(requestId),
+        outputIndex: index
+      }
+    }))
+  );
+  editor.bringToFront(placeholderIds);
+  editor.select(...placeholderIds);
+
+  return {
+    requestId,
+    placements
+  };
+}
+
+function isGenerationPlaceholderShape(shape: unknown): shape is GenerationPlaceholderShape {
+  return isRecord(shape) && shape.type === GENERATION_PLACEHOLDER_TYPE;
+}
+
+function livePlacement(editor: Editor, placement: GenerationPlaceholderPlacement): GenerationPlaceholderPlacement {
+  const shape = editor.getShape(placement.id);
+  if (!isGenerationPlaceholderShape(shape)) {
+    return placement;
+  }
+
+  return {
+    ...placement,
+    x: shape.x,
+    y: shape.y,
+    width: shape.props.w,
+    height: shape.props.h
+  };
+}
+
+function createImageAsset(asset: GeneratedAsset): TLAsset {
+  return {
+    id: createTldrawAssetId(asset.id),
     typeName: "asset",
     type: "image",
     props: {
-      src: placement.asset.url,
-      w: placement.asset.width,
-      h: placement.asset.height,
-      name: placement.asset.fileName,
-      mimeType: placement.asset.mimeType,
+      src: asset.url,
+      w: asset.width,
+      h: asset.height,
+      name: asset.fileName,
+      mimeType: asset.mimeType,
       isAnimated: false
     },
     meta: {
-      localAssetId: placement.asset.id
+      localAssetId: asset.id
     }
-  }));
-  const shapes = placements.map((placement, index) => {
-    const column = index % columns;
-    const row = Math.floor(index / columns);
-    const x = originX + column * (cellWidth + gap) + (cellWidth - placement.size.width) / 2;
-    const y = originY + row * (cellHeight + gap) + (cellHeight - placement.size.height) / 2;
+  };
+}
 
-    return {
-      id: placement.shapeId,
-      type: "image",
-      x,
-      y,
-      props: {
-        assetId: placement.assetId,
-        w: placement.size.width,
-        h: placement.size.height,
-        url: placement.asset.url,
-        playing: true,
-        crop: null,
-        flipX: false,
-        flipY: false,
-        altText: record.prompt
+function createImageShape(
+  asset: GeneratedAsset,
+  placement: GenerationPlaceholderPlacement,
+  promptValue: string
+): Partial<TLImageShape> & { id: TLShapeId; type: "image" } {
+  const assetId = createTldrawAssetId(asset.id);
+
+  return {
+    id: createTldrawShapeId(),
+    type: "image",
+    x: placement.x,
+    y: placement.y,
+    props: {
+      assetId,
+      w: placement.width,
+      h: placement.height,
+      url: asset.url,
+      playing: true,
+      crop: null,
+      flipX: false,
+      flipY: false,
+      altText: promptValue
+    }
+  };
+}
+
+function replaceGenerationPlaceholders(editor: Editor, placeholderSet: ActiveGenerationPlaceholders, record: GenerationRecord): number {
+  const assets: TLAsset[] = [];
+  const imageShapes: Array<Partial<TLImageShape> & { id: TLShapeId; type: "image" }> = [];
+  const replacedPlaceholderIds: TLShapeId[] = [];
+  const failedUpdates: Array<TLShapePartial<GenerationPlaceholderShape>> = [];
+
+  placeholderSet.placements.forEach((placement, index) => {
+    const output = record.outputs[index];
+    if (output?.status === "succeeded" && output.asset) {
+      const resolvedPlacement = livePlacement(editor, placement);
+      assets.push(createImageAsset(output.asset));
+      imageShapes.push(createImageShape(output.asset, resolvedPlacement, record.prompt));
+      if (isGenerationPlaceholderShape(editor.getShape(placement.id))) {
+        replacedPlaceholderIds.push(placement.id);
       }
-    } satisfies Partial<TLImageShape> & { id: TLShapeId; type: "image" };
+      return;
+    }
+
+    if (isGenerationPlaceholderShape(editor.getShape(placement.id))) {
+      failedUpdates.push({
+        id: placement.id,
+        type: GENERATION_PLACEHOLDER_TYPE,
+        props: {
+          status: "failed",
+          error: output?.error || record.error || "图像生成失败。"
+        }
+      });
+    }
   });
 
-  editor.createAssets(assets);
-  editor.createShapes(shapes);
-  editor.select(...placements.map((placement) => placement.shapeId));
+  editor.run(() => {
+    if (replacedPlaceholderIds.length > 0) {
+      editor.deleteShapes(replacedPlaceholderIds);
+    }
+    if (assets.length > 0) {
+      editor.createAssets(assets);
+    }
+    if (imageShapes.length > 0) {
+      editor.createShapes(imageShapes);
+    }
+    if (failedUpdates.length > 0) {
+      editor.updateShapes<GenerationPlaceholderShape>(failedUpdates);
+    }
+  });
 
-  return placements.length;
+  if (imageShapes.length > 0) {
+    editor.select(...imageShapes.map((shape) => shape.id));
+  }
+
+  return imageShapes.length;
+}
+
+function markGenerationPlaceholdersFailed(editor: Editor, placeholderSet: ActiveGenerationPlaceholders, error: string): void {
+  const updates = placeholderSet.placements.flatMap((placement) => {
+    const shape = editor.getShape(placement.id);
+    if (!isGenerationPlaceholderShape(shape) || shape.props.status !== "loading") {
+      return [];
+    }
+
+    return [
+      {
+        id: placement.id,
+        type: GENERATION_PLACEHOLDER_TYPE,
+        props: {
+          status: "failed",
+          error
+        }
+      } satisfies TLShapePartial<GenerationPlaceholderShape>
+    ];
+  });
+
+  if (updates.length > 0) {
+    editor.updateShapes<GenerationPlaceholderShape>(updates);
+  }
+}
+
+function deleteLoadingGenerationPlaceholders(editor: Editor, placeholderSet: ActiveGenerationPlaceholders): void {
+  const loadingPlaceholderIds = placeholderSet.placements.flatMap((placement) => {
+    const shape = editor.getShape(placement.id);
+    return isGenerationPlaceholderShape(shape) && shape.props.status === "loading" ? [placement.id] : [];
+  });
+
+  if (loadingPlaceholderIds.length > 0) {
+    editor.deleteShapes(loadingPlaceholderIds);
+  }
 }
 
 function resolveReferenceSelection(editor: Editor): ReferenceSelection {
   const selectedShapes = editor.getSelectedShapes();
 
   if (selectedShapes.length === 0) {
-    return {
-      status: "none",
-      hint: "选择画布中的一张图片后，可用它作为参考生成新图。"
-    };
+    return missingReferenceSelection;
   }
 
   if (selectedShapes.length > 1) {
@@ -332,6 +590,13 @@ function resolveReferenceSelection(editor: Editor): ReferenceSelection {
     };
   }
 
+  if (!isReadableReferenceSource(sourceUrl, asset)) {
+    return {
+      status: "unreadable",
+      hint: "这张图片当前无法被浏览器读取，请选择本地生成或已导入的 PNG、JPEG、WebP 图片。"
+    };
+  }
+
   return {
     status: "ready",
     assetId: imageShape.props.assetId,
@@ -347,6 +612,32 @@ function resolveReferenceSelection(editor: Editor): ReferenceSelection {
 function getImageSourceUrl(shape: TLImageShape, asset: TLAsset | undefined): string | undefined {
   const assetSrc = asset?.type === "image" && typeof asset.props.src === "string" ? asset.props.src : undefined;
   return assetSrc || shape.props.url || undefined;
+}
+
+function getAssetMimeType(asset: TLAsset | undefined): string | undefined {
+  return asset?.type === "image" && typeof asset.props.mimeType === "string" ? asset.props.mimeType : undefined;
+}
+
+function isReadableReferenceSource(sourceUrl: string, asset: TLAsset | undefined): boolean {
+  const assetMimeType = getAssetMimeType(asset);
+  if (assetMimeType && !isSupportedReferenceImageType(assetMimeType)) {
+    return false;
+  }
+
+  if (sourceUrl.startsWith("data:")) {
+    const mimeType = /^data:([^;,]+)/iu.exec(sourceUrl)?.[1];
+    return Boolean(mimeType && isSupportedReferenceImageType(mimeType));
+  }
+
+  if (sourceUrl.startsWith("blob:")) {
+    return true;
+  }
+
+  try {
+    return new URL(sourceUrl, window.location.origin).origin === window.location.origin;
+  } catch {
+    return false;
+  }
 }
 
 function getReferenceName(asset: TLAsset | undefined, sourceUrl: string): string {
@@ -420,6 +711,10 @@ function fileNameWithImageExtension(name: string, mimeType: string): string {
   return `${name}.${extension}`;
 }
 
+function isSupportedReferenceImageType(mimeType: string): boolean {
+  return SUPPORTED_REFERENCE_MIME_TYPES.has(mimeType.toLowerCase());
+}
+
 async function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -453,11 +748,11 @@ async function readReferenceImage(selection: Extract<ReferenceSelection, { statu
   }
 
   const blob = await response.blob();
-  if (!blob.type.startsWith("image/")) {
+  if (!isSupportedReferenceImageType(blob.type)) {
     throw new Error("当前参考资源不是可用的图片格式。");
   }
   if (blob.size > MAX_REFERENCE_IMAGE_BYTES) {
-    throw new Error("参考图像不能超过 20MB。");
+    throw new Error("参考图像不能超过 50MB。");
   }
 
   return {
@@ -473,11 +768,11 @@ async function readStoredReferenceImage(assetId: string, signal: AbortSignal): P
   }
 
   const blob = await response.blob();
-  if (!blob.type.startsWith("image/")) {
+  if (!isSupportedReferenceImageType(blob.type)) {
     throw new Error("历史参考资源不是可用的图片格式。");
   }
   if (blob.size > MAX_REFERENCE_IMAGE_BYTES) {
-    throw new Error("历史参考图像不能超过 20MB。");
+    throw new Error("历史参考图像不能超过 50MB。");
   }
 
   return {
@@ -527,7 +822,24 @@ function SaveStatusIcon({ status }: { status: SaveStatus }) {
   return <Cloud className="size-3.5" aria-hidden="true" />;
 }
 
+function PanelStatusIcon({ tone }: { tone: PanelStatusTone }) {
+  if (tone === "progress") {
+    return <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" aria-hidden="true" />;
+  }
+
+  if (tone === "success") {
+    return <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden="true" />;
+  }
+
+  if (tone === "warning") {
+    return <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />;
+  }
+
+  return <XCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />;
+}
+
 export function App() {
+  const [generationMode, setGenerationMode] = useState<GenerationMode>("text");
   const [prompt, setPrompt] = useState("");
   const [stylePreset, setStylePreset] = useState<StylePresetId>("none");
   const [sizePresetId, setSizePresetId] = useState(SIZE_PRESETS[0].id);
@@ -545,28 +857,70 @@ export function App() {
   const [generationError, setGenerationError] = useState("");
   const [generationMessage, setGenerationMessage] = useState("");
   const [generationHistory, setGenerationHistory] = useState<GenerationRecord[]>([]);
-  const [referenceSelection, setReferenceSelection] = useState<ReferenceSelection>({
-    status: "none",
-    hint: "选择画布中的一张图片后，可用它作为参考生成新图。"
-  });
+  const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
+  const [isMobileDrawer, setIsMobileDrawer] = useState(false);
+  const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
+  const [referenceSelection, setReferenceSelection] = useState<ReferenceSelection>(missingReferenceSelection);
+  const canvasShellRef = useRef<HTMLElement | null>(null);
+  const panelCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<Editor | null>(null);
+  const generationModeRef = useRef<GenerationMode>("text");
   const generationAbortRef = useRef<AbortController | null>(null);
+  const generationPlaceholdersRef = useRef<ActiveGenerationPlaceholders | null>(null);
   const generationRequestRef = useRef(0);
   const saveTimerRef = useRef<number | undefined>();
   const saveRequestRef = useRef(0);
 
   const trimmedPrompt = prompt.trim();
-  const promptValidationMessage = prompt.trim() ? "" : "请输入提示词后再生成。";
+  const promptValidationMessage = prompt.trim() ? "" : "请输入提示词。";
   const dimensionValidationMessage = sizeValidationMessage(width, height);
-  const validationMessage = promptValidationMessage || dimensionValidationMessage;
-  const canGenerate = !validationMessage && !isGenerating;
-  const isReferenceReady = referenceSelection.status === "ready";
+  const validationMessage = ((hasSubmitted || Boolean(dimensionValidationMessage)) && promptValidationMessage) || dimensionValidationMessage;
+  const shouldShowValidation = Boolean(validationMessage);
+  const isReferenceMode = generationMode === "reference";
+  const isReferenceReady = isReferenceMode && referenceSelection.status === "ready";
+  const canGenerate = !dimensionValidationMessage && !isGenerating && (generationMode === "text" || isReferenceReady);
 
-  const activePreset = useMemo(
-    () => SIZE_PRESETS.find((preset) => preset.id === sizePresetId) ?? SIZE_PRESETS[0],
-    [sizePresetId]
+  const visibleHistory = useMemo(
+    () => (isHistoryExpanded ? generationHistory : generationHistory.slice(0, HISTORY_COLLAPSED_LIMIT)),
+    [generationHistory, isHistoryExpanded]
   );
-  const activeSizeLabel = sizePresetId === CUSTOM_SIZE_PRESET_ID ? "自定义尺寸" : sizePresetLabel(activePreset);
+  const hiddenHistoryCount = Math.max(0, generationHistory.length - HISTORY_COLLAPSED_LIMIT);
+  const hasAdditionalHistory = hiddenHistoryCount > 0;
+  const panelStatus = useMemo<PanelStatus | null>(() => {
+    if (isGenerating) {
+      return {
+        tone: "progress",
+        message: generationMode === "reference" ? `正在基于参考图生成 ${count} 张图像。` : `正在生成 ${count} 张图像。`,
+        testId: "generation-progress"
+      };
+    }
+
+    if (generationError) {
+      return {
+        tone: "error",
+        message: generationError,
+        testId: "generation-error"
+      };
+    }
+
+    if (shouldShowValidation && validationMessage) {
+      return {
+        tone: "warning",
+        message: validationMessage,
+        testId: "validation-message"
+      };
+    }
+
+    if (generationMessage) {
+      return {
+        tone: "success",
+        message: generationMessage,
+        testId: "generation-message"
+      };
+    }
+
+    return null;
+  }, [count, generationError, generationMessage, generationMode, isGenerating, shouldShowValidation, validationMessage]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -585,8 +939,9 @@ export function App() {
         }
 
         const project = (await response.json()) as ProjectState;
-        if (isPersistedSnapshot(project.snapshot)) {
-          setProjectSnapshot(project.snapshot);
+        const snapshot = filterLoadingPlaceholdersFromSnapshot(project.snapshot);
+        if (isPersistedSnapshot(snapshot)) {
+          setProjectSnapshot(snapshot);
         }
         setGenerationHistory(project.history);
         setSaveStatus("saved");
@@ -611,9 +966,79 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(MOBILE_DRAWER_MEDIA_QUERY);
+    const updateDrawerMode = (): void => {
+      setIsMobileDrawer(mediaQuery.matches);
+    };
+
+    updateDrawerMode();
+    mediaQuery.addEventListener("change", updateDrawerMode);
+
+    return () => {
+      mediaQuery.removeEventListener("change", updateDrawerMode);
+    };
+  }, []);
+
+  const closeAiPanel = useCallback((): void => {
+    setIsAiPanelOpen(false);
+    window.requestAnimationFrame(() => {
+      canvasShellRef.current?.focus({ preventScroll: true });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileDrawer || !isAiPanelOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeAiPanel();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [closeAiPanel, isAiPanelOpen, isMobileDrawer]);
+
+  useEffect(() => {
+    if (!isMobileDrawer || !isAiPanelOpen) {
+      return;
+    }
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      panelCloseButtonRef.current?.focus({ preventScroll: true });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+    };
+  }, [isAiPanelOpen, isMobileDrawer]);
+
+  useEffect(() => {
+    generationModeRef.current = generationMode;
+
+    const editor = editorRef.current;
+    if (generationMode === "reference" && editor) {
+      setReferenceSelection(resolveReferenceSelection(editor));
+      return;
+    }
+
+    setReferenceSelection(missingReferenceSelection);
+  }, [generationMode]);
+
   const handleEditorMount = useCallback((editor: Editor) => {
     editorRef.current = editor;
     const updateReferenceSelection = (): void => {
+      if (generationModeRef.current !== "reference") {
+        return;
+      }
+
       setReferenceSelection(resolveReferenceSelection(editor));
     };
 
@@ -630,7 +1055,7 @@ export function App() {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            snapshot: editor.getSnapshot()
+            snapshot: filterLoadingPlaceholdersFromSnapshot(editor.getSnapshot())
           })
         });
 
@@ -707,8 +1132,16 @@ export function App() {
     setSizePresetId(CUSTOM_SIZE_PRESET_ID);
   }
 
+  function applyPromptStarter(starter: string): void {
+    setPrompt(starter);
+    setHasSubmitted(false);
+    setGenerationError("");
+    setGenerationMessage("");
+  }
+
   async function executeGeneration(
     input: GenerationSubmitInput,
+    requestMode: GenerationMode,
     resolveReference?: (signal: AbortSignal) => Promise<GenerationReferenceInput | undefined>
   ): Promise<void> {
     setHasSubmitted(true);
@@ -717,25 +1150,35 @@ export function App() {
 
     const inputValidationMessage = generationValidationMessage(input.prompt, input.size.width, input.size.height);
     if (inputValidationMessage) {
-      setGenerationError(inputValidationMessage);
       return;
     }
 
     const editor = editorRef.current;
     if (!editor) {
-      setGenerationError("画布尚未就绪，请稍后再试。");
+      setGenerationError("画布未就绪。");
       return;
     }
 
     generationAbortRef.current?.abort();
+    if (generationPlaceholdersRef.current) {
+      deleteLoadingGenerationPlaceholders(editor, generationPlaceholdersRef.current);
+      generationPlaceholdersRef.current = null;
+    }
+
     const controller = new AbortController();
     const requestId = generationRequestRef.current + 1;
     generationRequestRef.current = requestId;
     generationAbortRef.current = controller;
+    const placeholderSet = createGenerationPlaceholders(editor, input, requestId);
+    generationPlaceholdersRef.current = placeholderSet;
     setIsGenerating(true);
 
     try {
-      const referenceForRequest = await resolveReference?.(controller.signal);
+      const referenceForRequest = requestMode === "reference" ? await resolveReference?.(controller.signal) : undefined;
+      if (requestMode === "reference" && !referenceForRequest) {
+        throw new Error("请先选择一张可用的参考图像。");
+      }
+
       const requestBody: Record<string, unknown> = {
         prompt: input.prompt.trim(),
         presetId: input.presetId,
@@ -746,14 +1189,14 @@ export function App() {
         count: input.count
       };
 
-      if (referenceForRequest) {
+      if (requestMode === "reference" && referenceForRequest) {
         requestBody.referenceImage = referenceForRequest.referenceImage;
         if (referenceForRequest.referenceAssetId) {
           requestBody.referenceAssetId = referenceForRequest.referenceAssetId;
         }
       }
 
-      const response = await fetch(referenceForRequest ? "/api/images/edit" : "/api/images/generate", {
+      const response = await fetch(requestMode === "reference" ? "/api/images/edit" : "/api/images/generate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -776,14 +1219,15 @@ export function App() {
       }
 
       setGenerationHistory((history) => [body.record, ...history.filter((record) => record.id !== body.record.id)].slice(0, 20));
-      const insertedCount = insertGeneratedImages(editor, body.record);
-      const failedCount = body.record.outputs.filter((output) => output.status === "failed").length;
+      const insertedCount = replaceGenerationPlaceholders(editor, placeholderSet, body.record);
+      const failedCount =
+        body.record.outputs.filter((output) => output.status === "failed").length +
+        Math.max(0, placeholderSet.placements.length - body.record.outputs.length);
       if (insertedCount > 0) {
-        const actionLabel = body.record.mode === "edit" ? "参考生成" : "生成";
         setGenerationMessage(
           failedCount > 0
-            ? `${actionLabel}已插入 ${insertedCount} 张图像，${failedCount} 张失败。`
-            : `${actionLabel}已插入 ${insertedCount} 张图像。`
+            ? `已插入 ${insertedCount} 张图像，${failedCount} 张失败。`
+            : `已插入 ${insertedCount} 张图像。`
         );
       } else {
         setGenerationError(body.record.error || "没有可插入的成功图像。");
@@ -793,11 +1237,14 @@ export function App() {
         return;
       }
 
-      setGenerationError(error instanceof Error ? error.message : "生成失败，请稍后重试。");
+      const message = error instanceof Error ? error.message : "生成失败，请重试。";
+      markGenerationPlaceholdersFailed(editor, placeholderSet, message);
+      setGenerationError(message);
     } finally {
       if (generationRequestRef.current === requestId) {
         setIsGenerating(false);
         generationAbortRef.current = null;
+        generationPlaceholdersRef.current = null;
       }
     }
   }
@@ -816,16 +1263,28 @@ export function App() {
       count
     };
 
-    await executeGeneration(input, async (signal) => {
-      if (referenceSelection.status !== "ready") {
-        return undefined;
-      }
+    if (generationMode === "reference") {
+      await executeGeneration(input, "reference", async (signal) => {
+        if (referenceSelection.status !== "ready") {
+          return undefined;
+        }
 
-      return {
-        referenceImage: await readReferenceImage(referenceSelection, signal),
-        referenceAssetId: referenceSelection.localAssetId
-      };
-    });
+        return {
+          referenceImage: await readReferenceImage(referenceSelection, signal),
+          referenceAssetId: referenceSelection.localAssetId
+        };
+      });
+      return;
+    }
+
+    await executeGeneration(input, "text");
+  }
+
+  function cancelReferenceSelection(): void {
+    editorRef.current?.selectNone();
+    setReferenceSelection(missingReferenceSelection);
+    setGenerationError("");
+    setGenerationMessage("");
   }
 
   function locateHistoryRecord(record: GenerationRecord): void {
@@ -834,7 +1293,7 @@ export function App() {
 
     const editor = editorRef.current;
     if (!editor) {
-      setGenerationError("画布尚未就绪，请稍后再试。");
+      setGenerationError("画布未就绪。");
       return;
     }
 
@@ -871,6 +1330,9 @@ export function App() {
     setOutputFormat(record.outputFormat);
     setCount(nextCount);
 
+    const nextGenerationMode: GenerationMode = record.referenceAssetId ? "reference" : "text";
+    setGenerationMode(nextGenerationMode);
+
     await executeGeneration(
       {
         prompt: record.prompt,
@@ -881,6 +1343,7 @@ export function App() {
         outputFormat: record.outputFormat,
         count: nextCount
       },
+      nextGenerationMode,
       record.referenceAssetId
         ? async (signal) => ({
             referenceImage: await readStoredReferenceImage(record.referenceAssetId!, signal),
@@ -903,30 +1366,66 @@ export function App() {
 
   function cancelGeneration(): void {
     generationAbortRef.current?.abort();
+    const editor = editorRef.current;
+    if (editor && generationPlaceholdersRef.current) {
+      deleteLoadingGenerationPlaceholders(editor, generationPlaceholdersRef.current);
+    }
+    generationPlaceholdersRef.current = null;
     generationRequestRef.current += 1;
     setIsGenerating(false);
     setGenerationMessage("已取消本次生成。");
   }
 
-  const shouldShowValidation = hasSubmitted || !trimmedPrompt || Boolean(dimensionValidationMessage);
-
   return (
-    <main className="relative flex h-dvh min-h-[640px] overflow-hidden bg-neutral-950 pr-[380px] text-neutral-900">
+    <main className="app-shell relative flex h-dvh min-h-[640px] overflow-hidden bg-neutral-950 text-neutral-900">
       <section
-        className="relative min-w-0 flex-1 bg-neutral-100"
+        className="relative min-w-0 flex-1 bg-neutral-100 outline-none"
         aria-label="tldraw 创作画布"
         data-testid="canvas-shell"
+        ref={canvasShellRef}
+        tabIndex={-1}
       >
         {isProjectLoaded ? (
-          <Tldraw snapshot={projectSnapshot} onMount={handleEditorMount} />
+          <Tldraw snapshot={projectSnapshot} shapeUtils={shapeUtils} onMount={handleEditorMount} />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-neutral-500">正在载入画布...</div>
         )}
       </section>
 
+      {isMobileDrawer && isAiPanelOpen ? (
+        <button
+          aria-label="关闭 AI 生成面板"
+          className="ai-panel-backdrop"
+          data-testid="ai-panel-backdrop"
+          type="button"
+          onClick={closeAiPanel}
+        />
+      ) : null}
+
+      <button
+        aria-controls="ai-panel"
+        aria-expanded={isAiPanelOpen}
+        aria-haspopup="dialog"
+        className="mobile-ai-trigger"
+        data-drawer-state={isAiPanelOpen ? "open" : "closed"}
+        data-testid="open-ai-panel"
+        type="button"
+        onClick={() => setIsAiPanelOpen(true)}
+      >
+        <Sparkles className="size-4" aria-hidden="true" />
+        AI 生成
+      </button>
+
       <aside
-        className="fixed inset-y-0 right-0 z-20 flex w-[380px] flex-col border-l border-neutral-200 bg-white shadow-2xl shadow-neutral-950/15"
+        aria-hidden={isMobileDrawer && !isAiPanelOpen ? true : undefined}
+        aria-labelledby="ai-panel-title"
+        aria-modal={isMobileDrawer && isAiPanelOpen ? true : undefined}
+        className="ai-panel fixed inset-y-0 right-0 z-20 flex flex-col border-l border-neutral-200 bg-white shadow-2xl shadow-neutral-950/15"
+        data-drawer-state={isAiPanelOpen ? "open" : "closed"}
         data-testid="ai-panel"
+        id="ai-panel"
+        role={isMobileDrawer ? "dialog" : "complementary"}
+        {...(isMobileDrawer && !isAiPanelOpen ? { inert: "" } : {})}
       >
         <div className="border-b border-neutral-200 px-5 py-4">
           <div className="flex items-center justify-between gap-3">
@@ -934,26 +1433,65 @@ export function App() {
               <Sparkles className="size-4 text-blue-600" aria-hidden="true" />
               AI 图像工作台
             </div>
-            <div
-              className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium ${
-                saveStatus === "error" ? "bg-red-50 text-red-700" : "bg-neutral-100 text-neutral-600"
-              }`}
-              data-testid="save-status"
-              role="status"
-            >
-              <SaveStatusIcon status={saveStatus} />
-              {saveStatusLabel(saveStatus)}
+            <div className="flex items-center gap-2">
+              <div
+                className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium ${
+                  saveStatus === "error" ? "bg-red-50 text-red-700" : "bg-neutral-100 text-neutral-600"
+                }`}
+                data-testid="save-status"
+                role="status"
+              >
+                <SaveStatusIcon status={saveStatus} />
+                {saveStatusLabel(saveStatus)}
+              </div>
+              <button
+                aria-label="关闭 AI 生成面板"
+                className="ai-panel-close"
+                ref={panelCloseButtonRef}
+                type="button"
+                onClick={closeAiPanel}
+              >
+                <X className="size-4" aria-hidden="true" />
+              </button>
             </div>
           </div>
-          <h1 className="mt-1 text-xl font-semibold text-neutral-950">专业画布生成</h1>
+          <h1 className="mt-1 text-xl font-semibold text-neutral-950" id="ai-panel-title">
+            图像生成
+          </h1>
         </div>
 
-        <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
+        <div className="ai-panel-body flex-1 space-y-5 overflow-y-auto px-5 py-5">
           {saveError ? (
             <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" data-testid="save-error">
               {saveError}
             </p>
           ) : null}
+
+          <div data-testid="generation-mode-control">
+            <span className="control-label">模式</span>
+            <div className="mt-2 grid grid-cols-2 gap-2" role="group" aria-label="模式">
+              <button
+                className={generationMode === "text" ? "segmented-control h-9 text-xs is-active" : "segmented-control h-9 text-xs"}
+                type="button"
+                aria-pressed={generationMode === "text"}
+                data-testid="mode-text"
+                onClick={() => setGenerationMode("text")}
+              >
+                提示词生成
+              </button>
+              <button
+                className={
+                  generationMode === "reference" ? "segmented-control h-9 text-xs is-active" : "segmented-control h-9 text-xs"
+                }
+                type="button"
+                aria-pressed={generationMode === "reference"}
+                data-testid="mode-reference"
+                onClick={() => setGenerationMode("reference")}
+              >
+                参考生成
+              </button>
+            </div>
+          </div>
 
           <label className="block">
             <span className="control-label">提示词</span>
@@ -966,49 +1504,74 @@ export function App() {
             />
           </label>
 
-          {shouldShowValidation && validationMessage ? (
-            <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700" data-testid="validation-message">
-              {validationMessage}
-            </p>
-          ) : null}
-
-          {generationError ? (
-            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" data-testid="generation-error">
-              {generationError}
-            </p>
-          ) : null}
-
-          {generationMessage ? (
-            <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700" data-testid="generation-message">
-              {generationMessage}
-            </p>
-          ) : null}
-
-          <section
-            className={`rounded-md border px-3 py-3 ${
-              isReferenceReady ? "border-blue-200 bg-blue-50 text-blue-800" : "border-neutral-200 bg-neutral-50 text-neutral-600"
-            }`}
-            data-reference-state={referenceSelection.status}
-            data-testid="reference-state"
-          >
-            <div className="flex items-start gap-2">
-              <ImageIcon className={`mt-0.5 size-4 ${isReferenceReady ? "text-blue-600" : "text-neutral-400"}`} aria-hidden="true" />
-              <div className="min-w-0">
-                <p className="text-sm font-semibold">{isReferenceReady ? "参考生成已启用" : "参考生成未启用"}</p>
-                <p className="mt-1 text-xs leading-5" data-testid="reference-hint">
-                  {referenceSelection.hint}
-                </p>
-                {referenceSelection.status === "ready" ? (
-                  <p className="mt-2 truncate text-xs font-medium" data-testid="reference-name">
-                    {referenceSelection.name} · {Math.round(referenceSelection.width)} x {Math.round(referenceSelection.height)}
-                  </p>
-                ) : null}
-              </div>
+          {!trimmedPrompt ? (
+            <div className="-mt-3 flex flex-wrap gap-2" data-testid="prompt-starters">
+              {promptStarters.map((starter) => (
+                <button
+                  className="prompt-chip"
+                  key={starter.label}
+                  type="button"
+                  title={starter.prompt}
+                  data-testid="prompt-starter-chip"
+                  onClick={() => applyPromptStarter(starter.prompt)}
+                >
+                  {starter.label}
+                </button>
+              ))}
             </div>
-          </section>
+          ) : null}
+
+          {panelStatus ? (
+            <div
+              aria-live={panelStatus.tone === "progress" ? "polite" : "assertive"}
+              className={`panel-status-strip ${panelStatusStyles[panelStatus.tone]}`}
+              data-testid={panelStatus.testId}
+              role={panelStatus.tone === "success" || panelStatus.tone === "progress" ? "status" : "alert"}
+            >
+              <PanelStatusIcon tone={panelStatus.tone} />
+              <p className="min-w-0 flex-1">{panelStatus.message}</p>
+            </div>
+          ) : null}
+
+          {isReferenceMode ? (
+            <section
+              className={`rounded-md border px-3 py-3 ${
+                isReferenceReady ? "border-blue-200 bg-blue-50 text-blue-800" : "border-neutral-200 bg-neutral-50 text-neutral-600"
+              }`}
+              data-reference-state={referenceSelection.status}
+              data-testid="reference-state"
+            >
+              <div className="flex items-start gap-2">
+                <ImageIcon className={`mt-0.5 size-4 ${isReferenceReady ? "text-blue-600" : "text-neutral-400"}`} aria-hidden="true" />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">{isReferenceReady ? "参考生成已就绪" : "请选择一张参考图"}</p>
+                  <p className="mt-1 text-xs leading-5" data-testid="reference-hint">
+                    {referenceSelection.hint}
+                  </p>
+                  {referenceSelection.status === "ready" ? (
+                    <div className="mt-3 flex items-center gap-2">
+                      <p className="min-w-0 flex-1 truncate text-xs font-medium" data-testid="reference-name">
+                        {referenceSelection.name} · {Math.round(referenceSelection.width)} x {Math.round(referenceSelection.height)}
+                      </p>
+                      <button
+                        className="secondary-action h-8 shrink-0 px-2 text-xs"
+                        type="button"
+                        data-testid="cancel-reference"
+                        disabled={isGenerating}
+                        onClick={cancelReferenceSelection}
+                      >
+                        <X className="size-3.5" aria-hidden="true" />
+                        取消参考
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </section>
+          ) : null}
 
           <label className="block">
-            <span className="control-label">风格预设</span>
+            <span className="control-label">风格</span>
             <select
               className="field-control"
               value={stylePreset}
@@ -1024,7 +1587,7 @@ export function App() {
           </label>
 
           <label className="block">
-            <span className="control-label">场景尺寸</span>
+            <span className="control-label">尺寸</span>
             <select
               className="field-control"
               value={sizePresetId}
@@ -1125,98 +1688,105 @@ export function App() {
             </div>
           </details>
 
-          <div className="rounded-md bg-neutral-100 px-3 py-3 text-xs leading-5 text-neutral-600">
-            当前尺寸：{activeSizeLabel}，画布输出 {Number.isNaN(width) ? "-" : width} x{" "}
-            {Number.isNaN(height) ? "-" : height}px
-          </div>
-
-          <section className="space-y-3" data-testid="generation-history">
+          <section className="space-y-3" data-history-expanded={isHistoryExpanded} data-testid="generation-history">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-sm font-semibold text-neutral-950">生成历史</h2>
-              <span className="text-xs text-neutral-500">{generationHistory.length} 条</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-neutral-500">{generationHistory.length} 条</span>
+                {hasAdditionalHistory ? (
+                  <button
+                    aria-expanded={isHistoryExpanded}
+                    className="history-toggle"
+                    data-testid="history-toggle"
+                    type="button"
+                    onClick={() => setIsHistoryExpanded((expanded) => !expanded)}
+                  >
+                    {isHistoryExpanded ? "收起" : `展开 ${hiddenHistoryCount} 条`}
+                    <ChevronDown className={`size-3.5 transition ${isHistoryExpanded ? "rotate-180" : ""}`} aria-hidden="true" />
+                  </button>
+                ) : null}
+              </div>
             </div>
 
             {generationHistory.length === 0 ? (
               <p className="rounded-md border border-dashed border-neutral-300 px-3 py-4 text-sm text-neutral-500">
-                还没有生成记录。
+                暂无记录。
               </p>
             ) : (
-              <div className="space-y-2">
-                {generationHistory.map((record) => {
+              <div className="history-list">
+                {visibleHistory.map((record) => {
                   const downloadableAsset = firstDownloadableAsset(record);
+                  const excerpt = promptExcerpt(record.prompt);
                   const totalOutputs = record.outputs.length || record.count;
 
                   return (
                     <article
-                      className="rounded-md border border-neutral-200 bg-white px-3 py-3 shadow-sm"
+                      className="history-item"
                       data-testid="history-record"
                       key={record.id}
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <p className="min-w-0 flex-1 text-sm font-medium leading-5 text-neutral-950">
-                          {promptExcerpt(record.prompt)}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className={`history-status-pill ${historyStatusStyles[record.status]}`}>
+                            {statusLabels[record.status]}
+                          </span>
+                          <span className="truncate text-xs text-neutral-500">{modeLabels[record.mode]}</span>
+                        </div>
+                        <p className="mt-1 truncate text-sm font-medium leading-5 text-neutral-950" title={record.prompt}>
+                          {excerpt}
                         </p>
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${
-                            record.status === "failed" ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"
-                          }`}
-                        >
-                          {statusLabels[record.status]}
-                        </span>
+                        <dl className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-xs leading-5 text-neutral-500">
+                          <div className="inline-flex items-center gap-1">
+                            <dt className="sr-only">尺寸</dt>
+                            <dd>
+                              {record.size.width} x {record.size.height}
+                            </dd>
+                          </div>
+                          <div className="inline-flex items-center gap-1">
+                            <dt className="sr-only">输出数量</dt>
+                            <dd>
+                              {successfulOutputCount(record)} / {totalOutputs} 张
+                            </dd>
+                          </div>
+                          <div className="inline-flex items-center gap-1">
+                            <dt className="sr-only">创建时间</dt>
+                            <dd>{formatCreatedTime(record.createdAt)}</dd>
+                          </div>
+                        </dl>
                       </div>
 
-                      <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs leading-5 text-neutral-600">
-                        <div>
-                          <dt className="sr-only">模式</dt>
-                          <dd>{modeLabels[record.mode]}</dd>
-                        </div>
-                        <div>
-                          <dt className="sr-only">尺寸</dt>
-                          <dd>
-                            {record.size.width} x {record.size.height}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="sr-only">输出数量</dt>
-                          <dd>
-                            输出 {successfulOutputCount(record)} / {totalOutputs}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="sr-only">创建时间</dt>
-                          <dd>{formatCreatedTime(record.createdAt)}</dd>
-                        </div>
-                      </dl>
-
-                      <div className="mt-3 grid grid-cols-3 gap-2">
+                      <div className="history-actions">
                         <button
-                          className="secondary-action h-9 px-2 text-xs"
+                          aria-label={`定位历史记录：${excerpt}`}
+                          className="history-icon-action"
                           type="button"
                           data-testid="history-locate"
+                          title="定位"
                           onClick={() => locateHistoryRecord(record)}
                         >
-                          <MapPin className="size-3.5" aria-hidden="true" />
-                          定位
+                          <MapPin className="size-4" aria-hidden="true" />
                         </button>
                         <button
-                          className="secondary-action h-9 px-2 text-xs"
+                          aria-label={`重跑历史记录：${excerpt}`}
+                          className="history-icon-action"
                           type="button"
                           data-testid="history-rerun"
                           disabled={isGenerating}
+                          title={isGenerating ? "生成中不可重跑" : "重跑"}
                           onClick={() => void rerunHistoryRecord(record)}
                         >
-                          <RotateCcw className="size-3.5" aria-hidden="true" />
-                          重跑
+                          <RotateCcw className="size-4" aria-hidden="true" />
                         </button>
                         <button
-                          className="secondary-action h-9 px-2 text-xs"
+                          aria-label={`下载历史记录：${excerpt}`}
+                          className="history-icon-action"
                           type="button"
                           data-testid="history-download"
                           disabled={!downloadableAsset}
+                          title={downloadableAsset ? "下载" : "没有可下载的本地资源"}
                           onClick={() => downloadHistoryRecord(record)}
                         >
-                          <Download className="size-3.5" aria-hidden="true" />
-                          下载
+                          <Download className="size-4" aria-hidden="true" />
                         </button>
                       </div>
                     </article>
@@ -1227,11 +1797,12 @@ export function App() {
           </section>
         </div>
 
-        <div className="grid grid-cols-[1fr_auto] gap-3 border-t border-neutral-200 bg-white px-5 py-4">
+        <div className="ai-panel-actions grid grid-cols-[1fr_auto] gap-3 border-t border-neutral-200 bg-white px-5 py-4">
           <button
             className="primary-action"
             disabled={!canGenerate}
             type="button"
+            data-generation-mode={generationMode}
             data-reference-mode={isReferenceReady ? "edit" : "generate"}
             data-testid="generate-button"
             onClick={submitGeneration}
@@ -1243,7 +1814,7 @@ export function App() {
             ) : (
               <Square className="size-4" aria-hidden="true" />
             )}
-            {isReferenceReady ? "参考生成" : "生成"}
+            {isGenerating ? (generationMode === "reference" ? "参考生成中" : "图像生成中") : generationMode === "reference" ? "参考生成" : "提示词生成"}
           </button>
           <button className="secondary-action" disabled={!isGenerating} type="button" onClick={cancelGeneration}>
             <XCircle className="size-4" aria-hidden="true" />

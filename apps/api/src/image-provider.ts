@@ -1,3 +1,5 @@
+import OpenAI, { APIError, APIUserAbortError, toFile } from "openai";
+import type { ImageEditParamsNonStreaming, ImageGenerateParamsNonStreaming, ImagesResponse } from "openai/resources/images";
 import {
   IMAGE_MODEL,
   type ImageQuality,
@@ -23,9 +25,7 @@ export interface EditImageProviderInput extends ImageProviderInput {
 }
 
 export interface ProviderImage {
-  b64Json?: string;
-  url?: string;
-  revisedPrompt?: string;
+  b64Json: string;
 }
 
 export interface ProviderResult {
@@ -51,26 +51,25 @@ export class ProviderError extends Error {
   }
 }
 
-export interface OpenAICompatibleProviderConfig {
+export interface OpenAIImageProviderConfig {
   apiKey: string;
-  baseUrl: string;
 }
 
-interface OpenAIImageResponse {
-  data?: Array<{
-    b64_json?: unknown;
-    url?: unknown;
-    revised_prompt?: unknown;
-  }>;
-}
+const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
+const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
 
-const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
-const MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024;
+type FlexibleImageGenerateParams = Omit<ImageGenerateParamsNonStreaming, "size"> & {
+  size: string;
+};
 
-export function getOpenAICompatibleProviderConfig():
+type FlexibleImageEditParams = Omit<ImageEditParamsNonStreaming, "size"> & {
+  size: string;
+};
+
+export function getOpenAIImageProviderConfig():
   | {
       ok: true;
-      config: OpenAICompatibleProviderConfig;
+      config: OpenAIImageProviderConfig;
     }
   | {
       ok: false;
@@ -87,116 +86,112 @@ export function getOpenAICompatibleProviderConfig():
   return {
     ok: true,
     config: {
-      apiKey,
-      baseUrl: normalizeBaseUrl(process.env.OPENAI_BASE_URL)
+      apiKey
     }
   };
 }
 
-export function createOpenAICompatibleImageProvider(config: OpenAICompatibleProviderConfig): ImageProvider {
-  return new OpenAICompatibleImageProvider(config);
+export function createOpenAIImageProvider(config: OpenAIImageProviderConfig): ImageProvider {
+  return new OpenAIImageProvider(config);
 }
 
-class OpenAICompatibleImageProvider implements ImageProvider {
-  constructor(private readonly config: OpenAICompatibleProviderConfig) {}
+class OpenAIImageProvider implements ImageProvider {
+  private readonly client: OpenAI;
+
+  constructor(config: OpenAIImageProviderConfig) {
+    this.client = new OpenAI({
+      apiKey: config.apiKey
+    });
+  }
 
   async generate(input: ImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
-    const response = await this.postJson("/images/generations", {
-      model: IMAGE_MODEL,
-      prompt: input.prompt,
-      size: input.sizeApiValue,
-      quality: input.quality,
-      output_format: input.outputFormat,
-      n: input.count
-    }, signal);
+    try {
+      const response = await this.client.images.generate(
+        imageGenerateRequestBody({
+          model: IMAGE_MODEL,
+          prompt: input.prompt,
+          size: input.sizeApiValue,
+          quality: input.quality,
+          output_format: input.outputFormat,
+          n: input.count
+        }),
+        { signal }
+      );
 
-    return normalizeProviderResponse(response, input.sizeApiValue);
+      return normalizeProviderResponse(response, input.sizeApiValue);
+    } catch (error) {
+      throw toProviderError(error);
+    }
   }
 
   async edit(input: EditImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
-    const form = new FormData();
-    const reference = dataUrlToBlob(input.referenceImage.dataUrl);
-
-    form.set("model", IMAGE_MODEL);
-    form.set("prompt", input.prompt);
-    form.set("size", input.sizeApiValue);
-    form.set("quality", input.quality);
-    form.set("output_format", input.outputFormat);
-    form.set("n", String(input.count));
-    form.set("image", reference.blob, input.referenceImage.fileName ?? `reference.${reference.extension}`);
-
-    const response = await this.postForm("/images/edits", form, signal);
-    return normalizeProviderResponse(response, input.sizeApiValue);
-  }
-
-  private async postJson(path: string, body: unknown, signal?: AbortSignal): Promise<OpenAIImageResponse> {
-    return this.request(path, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(body),
-      signal
-    });
-  }
-
-  private async postForm(path: string, body: FormData, signal?: AbortSignal): Promise<OpenAIImageResponse> {
-    return this.request(path, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.config.apiKey}`
-      },
-      body,
-      signal
-    });
-  }
-
-  private async request(path: string, init: RequestInit): Promise<OpenAIImageResponse> {
-    let response: Response;
-
     try {
-      response = await fetch(`${this.config.baseUrl}${path}`, init);
+      const reference = await dataUrlToFile(input.referenceImage);
+      const response = await this.client.images.edit(
+        imageEditRequestBody({
+          model: IMAGE_MODEL,
+          image: [reference],
+          prompt: input.prompt,
+          size: input.sizeApiValue,
+          quality: input.quality,
+          output_format: input.outputFormat,
+          n: input.count
+        }),
+        { signal }
+      );
+
+      return normalizeProviderResponse(response, input.sizeApiValue);
     } catch (error) {
-      if (isAbortError(error)) {
-        throw error;
-      }
-      throw new ProviderError("upstream_failure", "上游图像服务请求失败，请稍后重试。", 502);
-    }
-
-    if (!response.ok) {
-      throw new ProviderError("upstream_failure", `上游图像服务返回失败状态 ${response.status}。`, 502);
-    }
-
-    try {
-      return (await response.json()) as OpenAIImageResponse;
-    } catch {
-      throw new ProviderError("unsupported_provider_behavior", "上游图像服务返回了无法解析的响应。", 502);
+      throw toProviderError(error);
     }
   }
 }
 
-function normalizeBaseUrl(value: string | undefined): string {
-  return (value?.trim() || DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, "");
+function imageGenerateRequestBody(body: FlexibleImageGenerateParams): ImageGenerateParamsNonStreaming {
+  // The SDK's image size union can lag gpt-image-2's documented flexible-size support.
+  return body as unknown as ImageGenerateParamsNonStreaming;
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
+function imageEditRequestBody(body: FlexibleImageEditParams): ImageEditParamsNonStreaming {
+  // The SDK's image size union can lag gpt-image-2's documented flexible-size support.
+  return body as unknown as ImageEditParamsNonStreaming;
 }
 
-function normalizeProviderResponse(response: OpenAIImageResponse, sizeApiValue: string): ProviderResult {
+function toProviderError(error: unknown): Error {
+  if (isAbortError(error)) {
+    return error;
+  }
+
+  if (error instanceof ProviderError) {
+    return error;
+  }
+
+  if (error instanceof APIError) {
+    return new ProviderError("upstream_failure", error.message || "OpenAI 图像服务请求失败。", error.status === 400 ? 400 : 502);
+  }
+
+  if (error instanceof Error && error.message) {
+    return new ProviderError("upstream_failure", error.message, 502);
+  }
+
+  return new ProviderError("upstream_failure", "OpenAI 图像服务请求失败。", 502);
+}
+
+function isAbortError(error: unknown): error is Error {
+  return error instanceof APIUserAbortError || (error instanceof DOMException && error.name === "AbortError");
+}
+
+function normalizeProviderResponse(response: ImagesResponse, sizeApiValue: string): ProviderResult {
   if (!Array.isArray(response.data) || response.data.length === 0) {
-    throw new ProviderError("unsupported_provider_behavior", "上游图像服务没有返回图像结果。", 502);
+    throw new ProviderError("unsupported_provider_behavior", "OpenAI 图像服务没有返回图像结果。", 502);
   }
 
   const images = response.data.map((item) => ({
-    b64Json: typeof item.b64_json === "string" ? item.b64_json : undefined,
-    url: typeof item.url === "string" ? item.url : undefined,
-    revisedPrompt: typeof item.revised_prompt === "string" ? item.revised_prompt : undefined
+    b64Json: typeof item.b64_json === "string" ? item.b64_json : ""
   }));
 
-  if (images.some((image) => !image.b64Json && !image.url)) {
-    throw new ProviderError("unsupported_provider_behavior", "上游图像服务返回了不支持的图像结果。", 502);
+  if (images.some((image) => !image.b64Json)) {
+    throw new ProviderError("unsupported_provider_behavior", "OpenAI 图像服务没有返回 base64 图像数据。", 502);
   }
 
   return {
@@ -206,21 +201,33 @@ function normalizeProviderResponse(response: OpenAIImageResponse, sizeApiValue: 
   };
 }
 
-function dataUrlToBlob(dataUrl: string): { blob: Blob; extension: string } {
-  const match = /^data:([^;,]+);base64,(.+)$/u.exec(dataUrl);
+async function dataUrlToFile(input: ReferenceImageInput): Promise<File> {
+  const match = /^data:([^;,]+);base64,(.+)$/u.exec(input.dataUrl);
   if (!match) {
     throw new ProviderError("unsupported_provider_behavior", "参考图像格式不受支持。", 400);
   }
 
-  const mimeType = match[1];
-  const extension = mimeType.split("/")[1] || "png";
-  const bytes = Buffer.from(match[2], "base64");
-  if (bytes.length > MAX_REFERENCE_IMAGE_BYTES) {
-    throw new ProviderError("unsupported_provider_behavior", "参考图像不能超过 20MB。", 400);
+  const mimeType = match[1].toLowerCase();
+  if (!SUPPORTED_REFERENCE_MIME_TYPES.has(mimeType)) {
+    throw new ProviderError("unsupported_provider_behavior", "参考图像必须是 PNG、JPEG 或 WebP 格式。", 400);
   }
 
-  return {
-    blob: new Blob([bytes], { type: mimeType }),
-    extension
-  };
+  const bytes = Buffer.from(match[2], "base64");
+  if (bytes.length > MAX_REFERENCE_IMAGE_BYTES) {
+    throw new ProviderError("unsupported_provider_behavior", "参考图像不能超过 50MB。", 400);
+  }
+
+  const normalizedMimeType = mimeType === "image/jpg" ? "image/jpeg" : mimeType;
+  const extension = normalizedMimeType === "image/jpeg" ? "jpg" : normalizedMimeType.split("/")[1] || "png";
+  const fileName = sanitizeFileName(input.fileName) ?? `reference.${extension}`;
+  return toFile(bytes, fileName, { type: normalizedMimeType });
+}
+
+function sanitizeFileName(fileName: string | undefined): string | undefined {
+  const trimmed = fileName?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  return trimmed.replace(/[^a-zA-Z0-9._-]/gu, "_");
 }

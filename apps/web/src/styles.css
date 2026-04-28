@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 :root {
+  --ai-panel-width: clamp(380px, 28vw, 440px);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #171717;
   background: #0a0a0a;
@@ -24,6 +25,269 @@ body {
   overflow: hidden;
 }
 
+.generation-placeholder-shape {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid rgb(37 99 235 / 0.48);
+  border-radius: 8px;
+  background:
+    linear-gradient(110deg, rgb(255 255 255 / 0) 0%, rgb(255 255 255 / 0.75) 42%, rgb(255 255 255 / 0) 72%),
+    linear-gradient(135deg, #eff6ff 0%, #f8fafc 48%, #ecfeff 100%);
+  background-size: 220% 100%, 100% 100%;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.72), 0 14px 30px rgb(15 23 42 / 0.08);
+  color: #1e3a8a;
+  pointer-events: none;
+}
+
+.generation-placeholder-shape.is-loading {
+  animation:
+    generation-placeholder-shimmer 1.45s ease-in-out infinite,
+    generation-placeholder-breathe 1.6s ease-in-out infinite;
+}
+
+.generation-placeholder-shape.is-failed {
+  border-color: rgb(220 38 38 / 0.55);
+  background: linear-gradient(135deg, #fff1f2 0%, #ffffff 52%, #fef2f2 100%);
+  color: #991b1b;
+}
+
+.generation-placeholder-shape__content {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.38rem;
+  padding: clamp(0.7rem, 8%, 1.1rem);
+  text-align: center;
+}
+
+.generation-placeholder-shape__spinner {
+  width: 1.65rem;
+  height: 1.65rem;
+  border: 2px solid rgb(37 99 235 / 0.22);
+  border-top-color: #2563eb;
+  border-radius: 9999px;
+  animation: generation-placeholder-spin 0.82s linear infinite;
+}
+
+.generation-placeholder-shape__error-mark {
+  display: flex;
+  width: 1.65rem;
+  height: 1.65rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: #dc2626;
+  color: #ffffff;
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.generation-placeholder-shape__title {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 0.92rem;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.generation-placeholder-shape__size,
+.generation-placeholder-shape__copy {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.generation-placeholder-shape__copy {
+  color: #475569;
+  font-weight: 600;
+}
+
+.generation-placeholder-shape.is-loading .generation-placeholder-shape__size {
+  color: #1d4ed8;
+}
+
+.generation-placeholder-shape.is-failed .generation-placeholder-shape__copy {
+  color: #b91c1c;
+}
+
+@keyframes generation-placeholder-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes generation-placeholder-shimmer {
+  0% {
+    background-position: 180% 0, 0 0;
+  }
+  100% {
+    background-position: -80% 0, 0 0;
+  }
+}
+
+@keyframes generation-placeholder-breathe {
+  0%,
+  100% {
+    border-color: rgb(37 99 235 / 0.38);
+  }
+  50% {
+    border-color: rgb(14 165 233 / 0.72);
+  }
+}
+
+.app-shell {
+  padding-right: var(--ai-panel-width);
+}
+
+.ai-panel {
+  width: var(--ai-panel-width);
+}
+
+.ai-panel-backdrop,
+.mobile-ai-trigger,
+.ai-panel-close {
+  display: none;
+}
+
+.ai-panel-body {
+  overscroll-behavior: contain;
+}
+
+.ai-panel-actions {
+  padding-bottom: max(1rem, calc(1rem + env(safe-area-inset-bottom)));
+}
+
+@media (max-width: 1023px) {
+  html,
+  body,
+  #root {
+    overflow-x: hidden;
+  }
+
+  .app-shell {
+    --mobile-drawer-width: min(420px, calc(100vw - 40px));
+    padding-right: 0;
+  }
+
+  .ai-panel {
+    width: var(--mobile-drawer-width);
+    max-width: var(--mobile-drawer-width);
+    transform: translateX(calc(100% + 40px));
+    transition:
+      transform 180ms ease,
+      visibility 0s linear 180ms;
+    visibility: hidden;
+    z-index: 2000;
+  }
+
+  .ai-panel[data-drawer-state="open"] {
+    transform: translateX(0);
+    transition:
+      transform 180ms ease,
+      visibility 0s;
+    visibility: visible;
+  }
+
+  .ai-panel[data-drawer-state="closed"] {
+    pointer-events: none;
+  }
+
+  .ai-panel-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    right: var(--mobile-drawer-width);
+    z-index: 1900;
+    cursor: default;
+    border: 0;
+    background: rgb(10 10 10 / 0.45);
+    padding: 0;
+  }
+
+  .mobile-ai-trigger {
+    display: inline-flex;
+    position: fixed;
+    right: max(1rem, calc(1rem + env(safe-area-inset-right)));
+    bottom: max(1rem, calc(1rem + env(safe-area-inset-bottom)));
+    z-index: 1800;
+    height: 2.75rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border: 0;
+    border-radius: 9999px;
+    background: #2563eb;
+    box-shadow: 0 16px 40px rgb(15 23 42 / 0.28);
+    color: #ffffff;
+    font-size: 0.875rem;
+    font-weight: 700;
+    line-height: 1;
+    padding: 0 1rem;
+    transition:
+      background-color 150ms ease,
+      box-shadow 150ms ease,
+      transform 150ms ease;
+  }
+
+  .mobile-ai-trigger:hover {
+    background: #1d4ed8;
+    box-shadow: 0 18px 44px rgb(15 23 42 / 0.32);
+    transform: translateY(-1px);
+  }
+
+  .mobile-ai-trigger:focus-visible,
+  .ai-panel-close:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 2px;
+  }
+
+  .mobile-ai-trigger[data-drawer-state="open"] {
+    display: none;
+  }
+
+  .ai-panel-close {
+    display: inline-flex;
+    width: 1.75rem;
+    height: 1.75rem;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #d4d4d4;
+    border-radius: 0.375rem;
+    background: #ffffff;
+    color: #525252;
+    transition:
+      background-color 150ms ease,
+      border-color 150ms ease,
+      color 150ms ease;
+  }
+
+  .ai-panel-close:hover {
+    border-color: #a3a3a3;
+    background: #f5f5f5;
+    color: #171717;
+  }
+
+  .ai-panel-body {
+    padding-bottom: calc(1.25rem + env(safe-area-inset-bottom));
+  }
+}
+
+@media (min-width: 1024px) {
+  .ai-panel {
+    pointer-events: auto;
+    transform: none;
+    visibility: visible;
+  }
+}
+
 @layer components {
   .control-label {
     @apply text-xs font-semibold uppercase tracking-normal text-neutral-500;
@@ -39,6 +303,38 @@ body {
 
   .segmented-control.is-active {
     @apply border-blue-600 bg-blue-600 text-white hover:bg-blue-600;
+  }
+
+  .prompt-chip {
+    @apply inline-flex h-8 items-center rounded-full border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 transition hover:border-blue-300 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-100;
+  }
+
+  .panel-status-strip {
+    @apply flex items-start gap-2 rounded-md border px-3 py-2 text-sm leading-5;
+  }
+
+  .history-toggle {
+    @apply inline-flex h-7 items-center gap-1 rounded-md border border-neutral-200 bg-white px-2 text-xs font-semibold text-neutral-600 transition hover:border-neutral-300 hover:bg-neutral-50 hover:text-neutral-950 focus:outline-none focus:ring-2 focus:ring-blue-100;
+  }
+
+  .history-list {
+    @apply space-y-1.5;
+  }
+
+  .history-item {
+    @apply flex items-center gap-3 rounded-md border border-neutral-200 bg-white px-3 py-2.5 shadow-sm;
+  }
+
+  .history-status-pill {
+    @apply inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[11px] font-semibold leading-4;
+  }
+
+  .history-actions {
+    @apply grid shrink-0 grid-cols-3 gap-1;
+  }
+
+  .history-icon-action {
+    @apply inline-flex size-8 items-center justify-center rounded-md border border-transparent text-neutral-500 transition hover:border-neutral-200 hover:bg-neutral-50 hover:text-neutral-950 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:border-transparent disabled:bg-transparent disabled:text-neutral-300 disabled:hover:bg-transparent disabled:hover:text-neutral-300;
   }
 
   .primary-action {

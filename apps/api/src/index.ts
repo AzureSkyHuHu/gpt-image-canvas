@@ -24,8 +24,8 @@ import {
 import { closeDatabase } from "./database.js";
 import {
   ProviderError,
-  createOpenAICompatibleImageProvider,
-  getOpenAICompatibleProviderConfig,
+  createOpenAIImageProvider,
+  getOpenAIImageProviderConfig,
   type EditImageProviderInput,
   type ImageProviderInput
 } from "./image-provider.js";
@@ -134,13 +134,13 @@ app.post("/api/images/generate", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  const providerConfig = getOpenAICompatibleProviderConfig();
+  const providerConfig = getOpenAIImageProviderConfig();
   if (!providerConfig.ok) {
     return providerErrorJson(c, providerConfig.error);
   }
 
   try {
-    const provider = createOpenAICompatibleImageProvider(providerConfig.config);
+    const provider = createOpenAIImageProvider(providerConfig.config);
     return c.json(await runTextToImageGeneration(parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {
@@ -162,13 +162,13 @@ app.post("/api/images/edit", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  const providerConfig = getOpenAICompatibleProviderConfig();
+  const providerConfig = getOpenAIImageProviderConfig();
   if (!providerConfig.ok) {
     return providerErrorJson(c, providerConfig.error);
   }
 
   try {
-    const provider = createOpenAICompatibleImageProvider(providerConfig.config);
+    const provider = createOpenAIImageProvider(providerConfig.config);
     return c.json(await runReferenceImageGeneration(parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {

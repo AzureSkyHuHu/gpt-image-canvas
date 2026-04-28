@@ -1,5 +1,7 @@
 # GPT Image Canvas
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2.
 
 ## Requirements
@@ -7,7 +9,7 @@ Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2.
 - Node.js 22 or newer.
 - pnpm 9.14.2. The package manager is pinned in `package.json`; Corepack can activate it with `corepack prepare pnpm@9.14.2 --activate`.
 - Docker Desktop or a compatible Docker Engine for the Docker workflow.
-- An OpenAI-compatible Images API key that supports `gpt-image-2` for live generation. The app can boot without credentials, but generation requests will return a runtime missing-key error.
+- An OpenAI API key with access to `gpt-image-2` for live generation. The app can boot without credentials, but generation requests will return a runtime missing-key error.
 
 ## Quick Start
 
@@ -17,9 +19,23 @@ Copy-Item .env.example .env
 pnpm dev
 ```
 
-Set `OPENAI_API_KEY` in `.env` before live generation. Keep `OPENAI_BASE_URL=https://api.openai.com/v1` for OpenAI, or replace it with an OpenAI-compatible base URL. The only supported image model is `gpt-image-2`.
+Set `OPENAI_API_KEY` in `.env` before live generation. The app uses the official OpenAI Image API with `gpt-image-2`; custom provider base URLs are not supported.
 
 Open the web app at `http://localhost:5173`.
+
+## Codex Users
+
+Codex can work directly from this repository. After cloning, let it read `AGENTS.md`, then ask it to install dependencies and run checks with the pinned package manager:
+
+```powershell
+pnpm install
+pnpm typecheck
+pnpm build
+```
+
+Keep credentials out of prompts and logs. Put your OpenAI API key only in a local `.env` file copied from `.env.example`, and do not paste the key into a Codex message. If Codex needs to verify live generation, ask it to use the existing `.env` without printing environment values.
+
+For UI changes, have Codex run `pnpm dev` and verify the Vite app in a browser at `http://localhost:5173`. Local scratch files should stay under `.codex-temp/`, which is ignored by Git.
 
 ## Development Workflow
 
@@ -58,6 +74,13 @@ docker compose up --build
 
 Open the app at `http://localhost:8787` by default. Set `PORT` in `.env` before starting Docker Compose to use a different localhost port.
 
+The Compose build accepts the same network-related build arguments used by the reference `open-managed-flow` project: `NODE_IMAGE`, `NPM_CONFIG_REGISTRY`, `APT_MIRROR`, and `APT_SECURITY_MIRROR`. The default `NODE_IMAGE` in Compose is `node:23-bullseye-slim` because it satisfies the app's `>=22` runtime requirement and is commonly available as a local cache when Docker Hub is unreachable. To force the exact Node 22 base image, run:
+
+```powershell
+$env:NODE_IMAGE = 'node:22-bookworm-slim'
+docker compose up --build
+```
+
 `OPENAI_API_KEY` may be left empty for local boot checks. The app still starts, and generation endpoints return a missing-key JSON error until credentials are configured.
 
 ## Local Data
@@ -69,15 +92,22 @@ Runtime state is stored under `DATA_DIR`, which defaults to `./data` locally and
 
 The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so projects and generated assets survive container rebuilds. Do not commit `.env`, `data/`, generated images, SQLite files, or build output.
 
+## Security / Privacy Notes
+
+- Secrets are read only from `.env` or runtime environment variables. Never commit `.env`, expanded Docker Compose config output, shell history containing keys, or logs that include secret values.
+- Prompts, project state, generated assets, and SQLite data are local runtime data under `DATA_DIR`. Treat `data/` as private unless you intentionally export specific assets.
+- Before publishing a branch, check `git status --short` and confirm only source, docs, and intended metadata are staged. `.env`, `.ralph/`, `.codex-temp/`, `data/`, generated images, SQLite databases, and build output should stay untracked.
+- If a real API key was ever committed, rotate that key first. Git ignore rules prevent future leaks, but they do not remove secrets from existing Git history.
+
 ## Troubleshooting
 
 - Missing or empty `OPENAI_API_KEY`: the app still boots; text-to-image and reference-image requests return a missing-key JSON error. Add a valid key to `.env` and restart the API or Docker container.
-- Unsupported provider capability: confirm the configured provider supports OpenAI-compatible `/images/generations` and `/images/edits` requests with `gpt-image-2`.
+- Missing model access: confirm the OpenAI organization and project used by `OPENAI_API_KEY` can access `gpt-image-2`.
 - Port already in use: set `PORT` in `.env` for the API/Docker runtime, or run Vite on another port when prompted.
-- Docker build cannot pull `node:22-bookworm-slim`: verify Docker is running and Docker Hub is reachable, then rerun `docker compose up --build`.
+- Docker build cannot pull the Node base image: use a locally cached image with `$env:NODE_IMAGE = 'node:23-bullseye-slim'`, or restore Docker Hub access and rerun `docker compose up --build`.
 - Docker config output includes `.env` values by default. Use `docker compose config --quiet --no-env-resolution` for validation when real credentials are present, and do not share expanded config output.
 - Stale or unwanted local state: stop the app and remove files under `data/`. This deletes local project state, history, and generated assets.
 
-## Ralph
+## License
 
-Ralph templates live in `.agents/ralph`, and the executable PRD is `.agents/tasks/prd-gpt-image-canvas.json`.
+MIT

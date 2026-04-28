@@ -205,13 +205,13 @@ async function editSingleOutput(input: EditImageProviderInput, provider: ImagePr
   }
 }
 
-async function saveProviderImage(image: ProviderImage, input: ImageProviderInput, signal?: AbortSignal): Promise<GeneratedAsset> {
+async function saveProviderImage(image: ProviderImage, input: ImageProviderInput, _signal?: AbortSignal): Promise<GeneratedAsset> {
   const assetId = randomUUID();
   const fileName = `${assetId}.${input.outputFormat === "jpeg" ? "jpg" : input.outputFormat}`;
   const relativePath = `assets/${fileName}`;
   const filePath = resolve(runtimePaths.dataDir, relativePath);
   const mimeType = mimeTypes[input.outputFormat];
-  const bytes = image.b64Json ? Buffer.from(image.b64Json, "base64") : await downloadProviderImage(image.url, signal);
+  const bytes = Buffer.from(image.b64Json, "base64");
 
   await writeFile(filePath, bytes);
 
@@ -223,19 +223,6 @@ async function saveProviderImage(image: ProviderImage, input: ImageProviderInput
     width: input.size.width,
     height: input.size.height
   };
-}
-
-async function downloadProviderImage(url: string | undefined, signal?: AbortSignal): Promise<Buffer> {
-  if (!url) {
-    throw new ProviderError("unsupported_provider_behavior", "上游图像服务返回了不支持的图像结果。", 502);
-  }
-
-  const response = await fetch(url, { signal });
-  if (!response.ok) {
-    throw new ProviderError("upstream_failure", `上游图像文件下载失败，状态 ${response.status}。`, 502);
-  }
-
-  return Buffer.from(await response.arrayBuffer());
 }
 
 function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOutputResult[]): GenerationRecord {
@@ -356,7 +343,7 @@ function errorToMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
     return error.message;
   }
-  return "图像生成失败，请稍后重试。";
+  return "图像生成失败，请重试。";
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

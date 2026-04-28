@@ -2,6 +2,7 @@
   "name": "gpt-image-canvas",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "packageManager": "pnpm@9.14.2",
   "description": "Local professional AI canvas powered by tldraw and GPT Image 2.",
   "engines": {

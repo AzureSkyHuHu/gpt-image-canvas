@@ -19,8 +19,8 @@ export const SIZE_PRESETS: SizePreset[] = [
   { id: "square-1k", label: "Square 1K", width: 1024, height: 1024, description: "Avatar and social image" },
   { id: "poster-portrait", label: "Portrait poster", width: 1024, height: 1536, description: "Poster, cover, and mobile vertical image" },
   { id: "poster-landscape", label: "Landscape poster", width: 1536, height: 1024, description: "Wide cover and desktop image" },
-  { id: "story-9-16", label: "Story 9:16", width: 1080, height: 1920, description: "Short video cover and story image" },
-  { id: "video-16-9", label: "Video 16:9", width: 1920, height: 1080, description: "Video cover and presentation image" },
+  { id: "story-9-16", label: "Story 9:16", width: 1088, height: 1920, description: "Short video cover and story image" },
+  { id: "video-16-9", label: "Video 16:9", width: 1920, height: 1088, description: "Video cover and presentation image" },
   { id: "wide-2k", label: "Wide 2K", width: 2560, height: 1440, description: "Display page and wide composition" },
   { id: "portrait-2k", label: "Portrait 2K", width: 1440, height: 2560, description: "High-resolution portrait image" },
   { id: "square-2k", label: "Square 2K", width: 2048, height: 2048, description: "High-resolution square image" },
@@ -100,8 +100,11 @@ export type ImageSizeValidationResult =
     };
 
 export const MIN_IMAGE_DIMENSION = 512;
-export const MAX_IMAGE_DIMENSION = 4096;
-export const MAX_TOTAL_PIXELS = 4096 * 4096;
+export const MAX_IMAGE_DIMENSION = 3840;
+export const IMAGE_SIZE_MULTIPLE = 16;
+export const MIN_TOTAL_PIXELS = 655_360;
+export const MAX_TOTAL_PIXELS = 8_294_400;
+export const MAX_IMAGE_ASPECT_RATIO = 3;
 
 export function validateImageSize(size: ImageSize): ValidationResult {
   if (!Number.isInteger(size.width) || !Number.isInteger(size.height)) {
@@ -113,8 +116,17 @@ export function validateImageSize(size: ImageSize): ValidationResult {
   if (size.width > MAX_IMAGE_DIMENSION || size.height > MAX_IMAGE_DIMENSION) {
     return { ok: false, code: "invalid_size", message: `宽度和高度不能大于 ${MAX_IMAGE_DIMENSION}px。` };
   }
+  if (size.width % IMAGE_SIZE_MULTIPLE !== 0 || size.height % IMAGE_SIZE_MULTIPLE !== 0) {
+    return { ok: false, code: "invalid_size", message: `宽度和高度必须是 ${IMAGE_SIZE_MULTIPLE}px 的倍数。` };
+  }
+  if (Math.max(size.width, size.height) / Math.min(size.width, size.height) > MAX_IMAGE_ASPECT_RATIO) {
+    return { ok: false, code: "invalid_size", message: `长边和短边比例不能超过 ${MAX_IMAGE_ASPECT_RATIO}:1。` };
+  }
+  if (size.width * size.height < MIN_TOTAL_PIXELS) {
+    return { ok: false, code: "invalid_size", message: `总像素不能小于 ${MIN_TOTAL_PIXELS.toLocaleString()}。` };
+  }
   if (size.width * size.height > MAX_TOTAL_PIXELS) {
-    return { ok: false, code: "invalid_size", message: "总像素不能超过 4096 x 4096。" };
+    return { ok: false, code: "invalid_size", message: `总像素不能超过 ${MAX_TOTAL_PIXELS.toLocaleString()}。` };
   }
   return { ok: true };
 }

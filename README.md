@@ -13,9 +13,19 @@ Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2.
 
 ## Quick Start
 
+Windows PowerShell:
+
 ```powershell
 pnpm install
 Copy-Item .env.example .env
+pnpm dev
+```
+
+macOS/Linux:
+
+```sh
+pnpm install
+cp .env.example .env
 pnpm dev
 ```
 
@@ -27,7 +37,7 @@ Open the web app at `http://localhost:5173`.
 
 Codex can work directly from this repository. After cloning, let it read `AGENTS.md`, then ask it to install dependencies and run checks with the pinned package manager:
 
-```powershell
+```sh
 pnpm install
 pnpm typecheck
 pnpm build
@@ -48,7 +58,7 @@ Use the right-side AI panel to enter a prompt, choose a scene size, and generate
 
 Before completing changes, run:
 
-```powershell
+```sh
 pnpm typecheck
 pnpm build
 ```
@@ -66,8 +76,18 @@ pnpm build
 
 Docker Compose builds the shared contracts, web app, and API into one image. The Hono API serves both `/api` and the built web bundle from a single localhost port, while SQLite data and generated assets persist in host `./data`.
 
+Windows PowerShell:
+
 ```powershell
 Copy-Item .env.example .env
+docker compose config --quiet --no-env-resolution
+docker compose up --build
+```
+
+macOS/Linux:
+
+```sh
+cp .env.example .env
 docker compose config --quiet --no-env-resolution
 docker compose up --build
 ```
@@ -76,9 +96,17 @@ Open the app at `http://localhost:8787` by default. Set `PORT` in `.env` before 
 
 The Compose build accepts the same network-related build arguments used by the reference `open-managed-flow` project: `NODE_IMAGE`, `NPM_CONFIG_REGISTRY`, `APT_MIRROR`, and `APT_SECURITY_MIRROR`. The default `NODE_IMAGE` in Compose is `node:23-bullseye-slim` because it satisfies the app's `>=22` runtime requirement and is commonly available as a local cache when Docker Hub is unreachable. To force the exact Node 22 base image, run:
 
+Windows PowerShell:
+
 ```powershell
 $env:NODE_IMAGE = 'node:22-bookworm-slim'
 docker compose up --build
+```
+
+macOS/Linux:
+
+```sh
+NODE_IMAGE=node:22-bookworm-slim docker compose up --build
 ```
 
 `OPENAI_API_KEY` may be left empty for local boot checks. The app still starts, and generation endpoints return a missing-key JSON error until credentials are configured.
@@ -104,7 +132,7 @@ The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so project
 - Missing or empty `OPENAI_API_KEY`: the app still boots; text-to-image and reference-image requests return a missing-key JSON error. Add a valid key to `.env` and restart the API or Docker container.
 - Missing model access: confirm the OpenAI organization and project used by `OPENAI_API_KEY` can access `gpt-image-2`.
 - Port already in use: set `PORT` in `.env` for the API/Docker runtime, or run Vite on another port when prompted.
-- Docker build cannot pull the Node base image: use a locally cached image with `$env:NODE_IMAGE = 'node:23-bullseye-slim'`, or restore Docker Hub access and rerun `docker compose up --build`.
+- Docker build cannot pull the Node base image: use a locally cached image with `NODE_IMAGE=node:23-bullseye-slim docker compose up --build` on macOS/Linux or `$env:NODE_IMAGE = 'node:23-bullseye-slim'` followed by `docker compose up --build` in Windows PowerShell, or restore Docker Hub access and rerun `docker compose up --build`.
 - Docker config output includes `.env` values by default. Use `docker compose config --quiet --no-env-resolution` for validation when real credentials are present, and do not share expanded config output.
 - Stale or unwanted local state: stop the app and remove files under `data/`. This deletes local project state, history, and generated assets.
 

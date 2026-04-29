@@ -168,7 +168,7 @@ type ReferenceSelection =
 
 const missingReferenceSelection: ReferenceSelection = {
   status: "none",
-  hint: "选择画布中的一张图片后，可用它作为参考生成新图。"
+  hint: "选择画布中的一张图片后，可用它作为参考生成到画布。"
 };
 
 const qualityLabels: Record<ImageQuality, string> = {
@@ -206,8 +206,8 @@ const sizePresetLabels: Record<string, string> = {
 };
 
 const modeLabels: Record<GenerationRecord["mode"], string> = {
-  generate: "提示词生成",
-  edit: "参考生成"
+  generate: "提示词到画布",
+  edit: "参考图到画布"
 };
 
 const statusLabels: Record<GenerationStatus, string> = {
@@ -581,7 +581,7 @@ function replaceGenerationPlaceholders(editor: Editor, placeholderSet: ActiveGen
         type: GENERATION_PLACEHOLDER_TYPE,
         props: {
           status: "failed",
-          error: output?.error || record.error || "图像生成失败。"
+          error: output?.error || record.error || "生成到画布失败。"
         }
       });
     }
@@ -658,7 +658,7 @@ function resolveReferenceSelection(editor: Editor): ReferenceSelection {
   if (selectedShapes.length > 1) {
     return {
       status: "multiple",
-      hint: "当前选择了多个对象。只选择一张图片即可启用参考生成。"
+      hint: "当前选择了多个对象。只选择一张图片即可启用参考图到画布。"
     };
   }
 
@@ -940,10 +940,10 @@ function showGenerationCompleteNotification(record: GenerationRecord, insertedCo
 
   const isPartial = record.status === "partial" || failedCount > 0;
   const body = isPartial
-    ? `已插入 ${insertedCount} 张图像，${failedCount} 张失败。`
-    : `已插入 ${insertedCount} 张图像。`;
+    ? `已向画布插入 ${insertedCount} 张图像，${failedCount} 张失败。`
+    : `已向画布插入 ${insertedCount} 张图像。`;
 
-  new Notification(isPartial ? "图像生成部分完成" : "图像生成完成", {
+  new Notification(isPartial ? "生成到画布部分完成" : "已生成到画布", {
     body,
     icon: "/favicon.svg",
     tag: `generation-${record.id}`
@@ -980,6 +980,10 @@ function SaveStatusIcon({ status }: { status: SaveStatus }) {
   }
 
   return <Cloud className="size-3.5" aria-hidden="true" />;
+}
+
+function BrandMark({ className = "" }: { className?: string }) {
+  return <span className={`brand-mark ${className}`} aria-hidden="true" />;
 }
 
 function PanelStatusIcon({ tone }: { tone: PanelStatusTone }) {
@@ -1050,7 +1054,7 @@ export function App() {
     if (isGenerating) {
       return {
         tone: "progress",
-        message: `当前 ${activeGenerationCount} 个任务生成中，可继续下发新任务。`,
+        message: `当前 ${activeGenerationCount} 个任务正在生成到画布，可继续下发新任务。`,
         testId: "generation-progress"
       };
     }
@@ -1434,8 +1438,8 @@ export function App() {
       if (insertedCount > 0) {
         setGenerationMessage(
           failedCount > 0
-            ? `已插入 ${insertedCount} 张图像，${failedCount} 张失败。`
-            : `已插入 ${insertedCount} 张图像。`
+            ? `已向画布插入 ${insertedCount} 张图像，${failedCount} 张失败。`
+            : `已向画布插入 ${insertedCount} 张图像。`
         );
         showGenerationCompleteNotification(body.record, insertedCount, failedCount);
       } else {
@@ -1637,7 +1641,7 @@ export function App() {
     <main className="app-shell relative flex h-dvh min-h-[640px] overflow-hidden bg-neutral-950 text-neutral-900">
       <section
         className="relative min-w-0 flex-1 bg-neutral-100 outline-none"
-        aria-label="tldraw 创作画布"
+        aria-label="gpt-image-canvas 创作画布"
         data-testid="canvas-shell"
         ref={canvasShellRef}
         tabIndex={-1}
@@ -1651,13 +1655,19 @@ export function App() {
             onMount={handleEditorMount}
           />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-neutral-500">正在载入画布...</div>
+          <div className="canvas-loading-state">
+            <BrandMark className="brand-mark--large" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-neutral-800">正在载入 gpt-image-canvas</p>
+              <p className="mt-1 text-xs text-neutral-500">本地 AI 图像画布</p>
+            </div>
+          </div>
         )}
       </section>
 
       {isMobileDrawer && isAiPanelOpen ? (
         <button
-          aria-label="关闭 AI 生成面板"
+          aria-label="关闭生成到画布面板"
           className="ai-panel-backdrop"
           data-testid="ai-panel-backdrop"
           type="button"
@@ -1676,7 +1686,7 @@ export function App() {
         onClick={() => setIsAiPanelOpen(true)}
       >
         <Sparkles className="size-4" aria-hidden="true" />
-        AI 生成
+        生成到画布
       </button>
 
       <aside
@@ -1691,12 +1701,15 @@ export function App() {
         {...(isMobileDrawer && !isAiPanelOpen ? { inert: "" } : {})}
       >
         <div className="border-b border-neutral-200 px-5 py-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm font-medium text-neutral-500">
-              <Sparkles className="size-4 text-blue-600" aria-hidden="true" />
-              AI 图像工作台
+          <div className="flex items-start justify-between gap-3">
+            <div className="brand-lockup">
+              <BrandMark />
+              <div className="min-w-0">
+                <p className="brand-name">gpt-image-canvas</p>
+                <p className="brand-tagline">本地 AI 图像画布</p>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <div
                 className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium ${
                   saveStatus === "error" ? "bg-red-50 text-red-700" : "bg-neutral-100 text-neutral-600"
@@ -1708,7 +1721,7 @@ export function App() {
                 {saveStatusLabel(saveStatus)}
               </div>
               <button
-                aria-label="关闭 AI 生成面板"
+                aria-label="关闭生成到画布面板"
                 className="ai-panel-close"
                 ref={panelCloseButtonRef}
                 type="button"
@@ -1719,7 +1732,7 @@ export function App() {
             </div>
           </div>
           <h1 className="mt-1 text-xl font-semibold text-neutral-950" id="ai-panel-title">
-            图像生成
+            生成到画布
           </h1>
         </div>
 
@@ -1740,7 +1753,7 @@ export function App() {
                 data-testid="mode-text"
                 onClick={() => setGenerationMode("text")}
               >
-                提示词生成
+                提示词到画布
               </button>
               <button
                 className={
@@ -1751,7 +1764,7 @@ export function App() {
                 data-testid="mode-reference"
                 onClick={() => setGenerationMode("reference")}
               >
-                参考生成
+                参考图到画布
               </button>
             </div>
           </div>
@@ -1759,7 +1772,7 @@ export function App() {
           <label className="block">
             <span className="control-label">提示词</span>
             <textarea
-              className="mt-2 h-32 w-full resize-none rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm leading-6 text-neutral-950 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              className="mt-2 h-32 w-full resize-none rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm leading-6 text-neutral-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
               placeholder="描述画面主体、场景、光线、构图和关键细节"
               value={prompt}
               data-testid="prompt-input"
@@ -1807,7 +1820,7 @@ export function App() {
               <div className="flex items-start gap-2">
                 <ImageIcon className={`mt-0.5 size-4 ${isReferenceReady ? "text-blue-600" : "text-neutral-400"}`} aria-hidden="true" />
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold">{isReferenceReady ? "参考生成已就绪" : "请选择一张参考图"}</p>
+                  <p className="text-sm font-semibold">{isReferenceReady ? "参考图到画布已就绪" : "请选择一张参考图"}</p>
                   <p className="mt-1 text-xs leading-5" data-testid="reference-hint">
                     {referenceSelection.hint}
                   </p>
@@ -2099,7 +2112,7 @@ export function App() {
             ) : (
               <Square className="size-4" aria-hidden="true" />
             )}
-            {generationMode === "reference" ? "参考生成" : "提示词生成"}
+            {generationMode === "reference" ? "参考图生成到画布" : "生成到画布"}
           </button>
         </div>
       </aside>

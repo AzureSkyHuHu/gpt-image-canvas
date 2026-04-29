@@ -82,11 +82,13 @@ export class GenerationPlaceholderShapeUtil extends BaseBoxShapeUtil<GenerationP
           ) : (
             <div className="generation-placeholder-shape__spinner" aria-hidden="true" />
           )}
-          <div className="generation-placeholder-shape__title">{isFailed ? "生成失败" : "图像生成中"}</div>
+          <div className="generation-placeholder-shape__title">{isFailed ? "画布生成失败" : "生成到画布中"}</div>
           <div className="generation-placeholder-shape__size">
             {shape.props.targetWidth} x {shape.props.targetHeight}px
           </div>
-          {isFailed ? <div className="generation-placeholder-shape__copy">{conciseError(shape.props.error)}</div> : null}
+          <div className="generation-placeholder-shape__copy">
+            {isFailed ? conciseError(shape.props.error) : "gpt-image-canvas"}
+          </div>
         </div>
       </HTMLContainer>
     );

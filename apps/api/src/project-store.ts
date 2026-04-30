@@ -1,6 +1,8 @@
 import { desc, eq, inArray } from "drizzle-orm";
 import type {
   GeneratedAsset,
+  GalleryImageItem,
+  GalleryResponse,
   GenerationRecord as ApiGenerationRecord,
   GenerationStatus,
   ImageMode,
@@ -93,6 +95,45 @@ export function getProjectState(): ProjectState {
   };
 }
 
+export function getGalleryImages(): GalleryResponse {
+  const rows = db
+    .select({
+      output: generationOutputs,
+      generation: generationRecords,
+      asset: assets
+    })
+    .from(generationOutputs)
+    .innerJoin(generationRecords, eq(generationOutputs.generationId, generationRecords.id))
+    .innerJoin(assets, eq(generationOutputs.assetId, assets.id))
+    .where(eq(generationOutputs.status, "succeeded"))
+    .orderBy(desc(generationOutputs.createdAt))
+    .all();
+
+  return {
+    items: rows.map(({ output, generation, asset }) => ({
+      outputId: output.id,
+      generationId: generation.id,
+      mode: generation.mode as ImageMode,
+      prompt: generation.prompt,
+      effectivePrompt: generation.effectivePrompt,
+      presetId: generation.presetId,
+      size: {
+        width: generation.width,
+        height: generation.height
+      },
+      quality: generation.quality as ImageQuality,
+      outputFormat: generation.outputFormat as OutputFormat,
+      createdAt: output.createdAt,
+      asset: toGeneratedAsset(asset)
+    })).filter((item): item is GalleryImageItem => Boolean(item.asset))
+  };
+}
+
+export function deleteGalleryOutput(outputId: string): boolean {
+  const result = db.delete(generationOutputs).where(eq(generationOutputs.id, outputId)).run();
+  return result.changes > 0;
+}
+
 function getDefaultProjectRow(): (typeof projects.$inferSelect) | undefined {
   try {
     return db.select().from(projects).where(eq(projects.id, DEFAULT_PROJECT_ID)).get();
@@ -171,30 +212,40 @@ function readGenerationHistory(): ApiGenerationRecord[] {
     outputsByGenerationId.set(output.generationId, existing);
   }
 
-  return records.map((record) => ({
-    id: record.id,
-    mode: record.mode as ImageMode,
-    prompt: record.prompt,
-    effectivePrompt: record.effectivePrompt,
-    presetId: record.presetId,
-    size: {
-      width: record.width,
-      height: record.height
-    },
-    quality: record.quality as ImageQuality,
-    outputFormat: record.outputFormat as OutputFormat,
-    count: record.count,
-    status: record.status as GenerationStatus,
-    error: record.error ?? undefined,
-    referenceAssetId: record.referenceAssetId ?? undefined,
-    createdAt: record.createdAt,
-    outputs: (outputsByGenerationId.get(record.id) ?? []).map((output) => ({
+  return records.flatMap((record) => {
+    const mappedOutputs = (outputsByGenerationId.get(record.id) ?? []).map((output) => ({
       id: output.id,
       status: output.status as OutputStatus,
       asset: output.assetId ? toGeneratedAsset(assetById.get(output.assetId)) : undefined,
       error: output.error ?? undefined
-    }))
-  }));
+    }));
+
+    if (mappedOutputs.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        id: record.id,
+        mode: record.mode as ImageMode,
+        prompt: record.prompt,
+        effectivePrompt: record.effectivePrompt,
+        presetId: record.presetId,
+        size: {
+          width: record.width,
+          height: record.height
+        },
+        quality: record.quality as ImageQuality,
+        outputFormat: record.outputFormat as OutputFormat,
+        count: record.count,
+        status: record.status as GenerationStatus,
+        error: record.error ?? undefined,
+        referenceAssetId: record.referenceAssetId ?? undefined,
+        createdAt: record.createdAt,
+        outputs: mappedOutputs
+      }
+    ];
+  });
 }
 
 function toGeneratedAsset(asset: (typeof assets.$inferSelect) | undefined): GeneratedAsset | undefined {

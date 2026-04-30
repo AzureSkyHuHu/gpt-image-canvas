@@ -32,7 +32,7 @@ import {
   type ImageProviderInput
 } from "./image-provider.js";
 import { getStoredAssetFile, readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "./image-generation.js";
-import { getProjectState, saveProjectSnapshot } from "./project-store.js";
+import { deleteGalleryOutput, getGalleryImages, getProjectState, saveProjectSnapshot } from "./project-store.js";
 import { runtimePaths, serverConfig } from "./runtime.js";
 import { getStorageConfig, saveStorageConfig, testStorageConfig } from "./storage-config.js";
 
@@ -81,6 +81,19 @@ app.get("/api/config", (c) => {
 });
 
 app.get("/api/project", (c) => c.json(getProjectState()));
+
+app.get("/api/gallery", (c) => c.json(getGalleryImages()));
+
+app.delete("/api/gallery/:outputId", (c) => {
+  const deleted = deleteGalleryOutput(c.req.param("outputId"));
+  if (!deleted) {
+    return c.json(errorResponse("not_found", "找不到请求的 Gallery 图片记录。"), 404);
+  }
+
+  return c.json({
+    ok: true
+  });
+});
 
 app.get("/api/storage/config", (c) => c.json(getStorageConfig()));
 
@@ -172,13 +185,13 @@ app.get("/api/assets/:id", async (c) => {
 app.put("/api/project", async (c) => {
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
-    console.warn(`Project save rejected: ${payload.error.error.code}. ${payload.error.error.message}`);
+    logProjectSaveRejected(payload.error, c.req.raw);
     return c.json(payload.error, 400);
   }
 
   const parsed = parseProjectPayload(payload.value);
   if (!parsed.ok) {
-    console.warn(`Project save rejected: ${parsed.error.error.code}. ${parsed.error.error.message}`);
+    logProjectSaveRejected(parsed.error, c.req.raw);
     return c.json(parsed.error, 400);
   }
 
@@ -257,7 +270,7 @@ app.get(
   })
 );
 
-function errorResponse(code: string, message: string): { error: { code: string; message: string } } {
+function errorResponse(code: string, message: string): ErrorResponseBody {
   return {
     error: {
       code,
@@ -270,6 +283,13 @@ function downloadFileName(fileName: string): string {
   return fileName.replace(/[^a-zA-Z0-9._-]/gu, "_");
 }
 
+interface ErrorResponseBody {
+  error: {
+    code: string;
+    message: string;
+  };
+}
+
 type ParseResult<T> =
   | {
       ok: true;
@@ -277,8 +297,31 @@ type ParseResult<T> =
     }
   | {
       ok: false;
-      error: { error: { code: string; message: string } };
+      error: ErrorResponseBody;
     };
+
+function logProjectSaveRejected(error: ErrorResponseBody, request: Request): void {
+  console.warn(
+    `Project save rejected: ${error.error.code}. ${error.error.message}${formatRequestBodySummary(request)}`
+  );
+}
+
+function formatRequestBodySummary(request: Request): string {
+  const contentType = sanitizeHeaderValue(request.headers.get("content-type"));
+  const contentLength = sanitizeHeaderValue(request.headers.get("content-length"));
+  const transferEncoding = sanitizeHeaderValue(request.headers.get("transfer-encoding"));
+  const bodySize = contentLength
+    ? `content-length=${contentLength}`
+    : transferEncoding
+      ? `transfer-encoding=${transferEncoding}`
+      : "content-length=unknown";
+
+  return ` (${bodySize}, content-type=${contentType || "missing"})`;
+}
+
+function sanitizeHeaderValue(value: string | null): string {
+  return (value ?? "").replace(/[\r\n]/gu, " ").trim().slice(0, 120);
+}
 
 function providerErrorJson(_c: Context, error: ProviderError) {
   const body = errorResponse(error.code, error.message);
@@ -615,20 +658,36 @@ function parseSizePresetFromPresetId(value: unknown): string | undefined {
   return presetId && SIZE_PRESETS.some((preset) => preset.id === presetId) ? presetId : undefined;
 }
 
-async function readJson(request: Request): Promise<
-  | {
-      ok: true;
-      value: unknown;
-    }
-  | {
-      ok: false;
-      error: { error: { code: string; message: string } };
-    }
-> {
+async function readJson(request: Request): Promise<ParseResult<unknown>> {
+  const contentType = request.headers.get("content-type");
+  if (contentType && !isJsonContentType(contentType)) {
+    return {
+      ok: false,
+      error: errorResponse("unsupported_media_type", "请求 Content-Type 必须是 application/json。")
+    };
+  }
+
+  let bodyText: string;
+  try {
+    bodyText = await request.text();
+  } catch {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request_body", "请求体读取失败，请重试。")
+    };
+  }
+
+  if (bodyText.trim().length === 0) {
+    return {
+      ok: false,
+      error: errorResponse("empty_json", "请求体不能为空，必须是有效的 JSON。")
+    };
+  }
+
   try {
     return {
       ok: true,
-      value: await request.json()
+      value: JSON.parse(bodyText) as unknown
     };
   } catch {
     return {
@@ -636,6 +695,11 @@ async function readJson(request: Request): Promise<
       error: errorResponse("invalid_json", "请求体必须是有效的 JSON。")
     };
   }
+}
+
+function isJsonContentType(contentType: string): boolean {
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
+  return mediaType === "application/json" || Boolean(mediaType?.endsWith("+json"));
 }
 
 function parseProjectPayload(input: unknown):

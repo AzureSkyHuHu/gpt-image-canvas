@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.1.1 - 2026-04-30
+
+Gallery and interface refresh release.
+
+### Added
+
+- Gallery page for browsing, searching, opening, reusing, downloading, and removing generated images.
+- API routes and shared contracts for Gallery image listing and output removal.
+
+### Changed
+
+- Refreshed the canvas shell, navigation, AI panel, controls, prompt starters, reference preview, and generated-image preview behavior.
+- Updated the app preview asset to match the new interface.
+
 ## v0.1.0 - 2026-04-29
 
 First usable release focused on durable image storage, provider compatibility, and smoother canvas workflows.

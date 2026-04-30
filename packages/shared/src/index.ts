@@ -242,6 +242,24 @@ export interface GenerationResponse {
   record: GenerationRecord;
 }
 
+export interface GalleryImageItem {
+  outputId: string;
+  generationId: string;
+  mode: ImageMode;
+  prompt: string;
+  effectivePrompt: string;
+  presetId: string;
+  size: ImageSize;
+  quality: ImageQuality;
+  outputFormat: OutputFormat;
+  createdAt: string;
+  asset: GeneratedAsset;
+}
+
+export interface GalleryResponse {
+  items: GalleryImageItem[];
+}
+
 export interface ProjectState {
   id: string;
   name: string;

@@ -22,6 +22,8 @@ export type {
   GenerateImageRequest,
   GeneratedAsset,
   GeneratedAssetCloudInfo,
+  GalleryImageItem,
+  GalleryResponse,
   GenerationCount,
   GenerationOutput,
   GenerationRecord,

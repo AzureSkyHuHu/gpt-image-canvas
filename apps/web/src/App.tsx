@@ -14,7 +14,7 @@ import {
   X,
   XCircle
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Tldraw,
   type Editor,
@@ -27,6 +27,7 @@ import {
   type TLShapePartial,
   type TLShapeId,
   type TLStoreSnapshot,
+  type TLComponents,
   type TldrawOptions
 } from "tldraw";
 import {
@@ -44,6 +45,7 @@ import {
   SIZE_PRESETS,
   STYLE_PRESETS,
   validateImageSize,
+  type GalleryImageItem,
   type GenerationCount,
   type GenerationRecord,
   type GenerationResponse,
@@ -66,11 +68,17 @@ const HISTORY_COLLAPSED_LIMIT = 3;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
 const MOBILE_DRAWER_MEDIA_QUERY = "(max-width: 1023px)";
 const ASSET_PREVIEW_WIDTHS = [256, 512, 1024, 2048] as const;
+type AssetPreviewWidth = (typeof ASSET_PREVIEW_WIDTHS)[number];
+const GENERATED_ASSET_INITIAL_PREVIEW_WIDTH: AssetPreviewWidth = 2048;
 const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
+const initialCanvasPreviewWidths = new Map<string, AssetPreviewWidth>();
 const shapeUtils = [GenerationPlaceholderShapeUtil];
 const tldrawOptions = {
   debouncedZoomThreshold: 80
 } satisfies Partial<TldrawOptions>;
+const tldrawComponents = {
+  StylePanel: null
+} satisfies TLComponents;
 const TLDRAW_LICENSE_KEY =
   "tldraw-2026-08-08/WyJ3dGU4bldjRyIsWyIqIl0sMTYsIjIwMjYtMDgtMDgiXQ.Xt7lTydUhMnKfHfp+g8Mrs9gtJjlB8uPyYMniFEfRfruCYdYEl9J0uZl0lMAf6o7GdDB1zXOVhWLFAipssI6Cw";
 
@@ -112,8 +120,25 @@ const promptStarters = [
     prompt: "未来城市夜景，雨后街道，霓虹倒影，电影感光影"
   }
 ] as const;
+const quickSizePresetIds = new Set(["square-1k", "poster-portrait", "poster-landscape", "story-9-16", "video-16-9", "wide-2k"]);
+const quickSizePresets = SIZE_PRESETS.filter((preset) => quickSizePresetIds.has(preset.id));
+
+type GalleryPageModule = { default: typeof import("./GalleryPage").GalleryPage };
+let galleryPageModulePromise: Promise<GalleryPageModule> | undefined;
+
+function loadGalleryPageModule(): Promise<GalleryPageModule> {
+  galleryPageModulePromise ??= import("./GalleryPage").then((module) => ({ default: module.GalleryPage }));
+  return galleryPageModulePromise;
+}
+
+const LazyGalleryPage = lazy(loadGalleryPageModule);
+
+function preloadGalleryPage(): void {
+  void loadGalleryPageModule();
+}
 
 type PersistedSnapshot = TLEditorSnapshot | TLStoreSnapshot;
+type AppRoute = "canvas" | "gallery";
 type SaveStatus = "loading" | "saved" | "pending" | "saving" | "error";
 type GenerationMode = "text" | "reference";
 type PanelStatusTone = "progress" | "success" | "warning" | "error";
@@ -243,19 +268,19 @@ const statusLabels: Record<GenerationStatus, string> = {
 };
 
 const panelStatusStyles: Record<PanelStatusTone, string> = {
-  progress: "border-blue-200 bg-blue-50 text-blue-800",
-  success: "border-emerald-200 bg-emerald-50 text-emerald-800",
-  warning: "border-amber-200 bg-amber-50 text-amber-800",
-  error: "border-red-200 bg-red-50 text-red-800"
+  progress: "panel-status--progress",
+  success: "panel-status--success",
+  warning: "panel-status--warning",
+  error: "panel-status--error"
 };
 
 const historyStatusStyles: Record<GenerationStatus, string> = {
-  pending: "bg-blue-50 text-blue-700",
-  running: "bg-blue-50 text-blue-700",
-  succeeded: "bg-emerald-50 text-emerald-700",
-  partial: "bg-amber-50 text-amber-700",
-  failed: "bg-red-50 text-red-700",
-  cancelled: "bg-neutral-100 text-neutral-500"
+  pending: "history-status--pending",
+  running: "history-status--running",
+  succeeded: "history-status--succeeded",
+  partial: "history-status--partial",
+  failed: "history-status--failed",
+  cancelled: "history-status--cancelled"
 };
 
 function sizePresetLabel(preset: SizePreset): string {
@@ -282,6 +307,14 @@ function sizeValidationMessage(width: number, height: number): string {
 
 function generationValidationMessage(promptValue: string, widthValue: number, heightValue: number): string {
   return promptValue.trim() ? sizeValidationMessage(widthValue, heightValue) : "请输入提示词。";
+}
+
+function routeFromLocation(): AppRoute {
+  return window.location.pathname === "/gallery" ? "gallery" : "canvas";
+}
+
+function pathForRoute(route: AppRoute): string {
+  return route === "gallery" ? "/gallery" : "/";
 }
 
 function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
@@ -544,6 +577,8 @@ function livePlacement(editor: Editor, placement: GenerationPlaceholderPlacement
 }
 
 function createImageAsset(asset: GeneratedAsset): TLAsset {
+  initialCanvasPreviewWidths.set(asset.id, GENERATED_ASSET_INITIAL_PREVIEW_WIDTH);
+
   return {
     id: createTldrawAssetId(asset.id),
     typeName: "asset",
@@ -638,6 +673,59 @@ function replaceGenerationPlaceholders(editor: Editor, placeholderSet: ActiveGen
   }
 
   return imageShapes.length;
+}
+
+function generatedAssetsForRecord(record: GenerationRecord): GeneratedAsset[] {
+  return record.outputs.flatMap((output) => (output.status === "succeeded" && output.asset ? [output.asset] : []));
+}
+
+async function preloadGenerationRecordPreviews(record: GenerationRecord, signal: AbortSignal): Promise<void> {
+  await Promise.all(generatedAssetsForRecord(record).map((asset) => preloadGeneratedAssetPreview(asset, signal)));
+}
+
+async function preloadGeneratedAssetPreview(asset: GeneratedAsset, signal: AbortSignal): Promise<void> {
+  try {
+    await preloadImageUrl(assetPreviewUrl(asset.id, GENERATED_ASSET_INITIAL_PREVIEW_WIDTH), signal);
+  } catch (error) {
+    if (signal.aborted) {
+      throw error;
+    }
+  }
+}
+
+function preloadImageUrl(url: string, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(new DOMException("Image preload was aborted.", "AbortError"));
+  }
+
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.decoding = "async";
+
+    function cleanup(): void {
+      image.onload = null;
+      image.onerror = null;
+      signal.removeEventListener("abort", abort);
+    }
+    function complete(): void {
+      cleanup();
+      resolve();
+    }
+    function fail(): void {
+      cleanup();
+      reject(new Error(`Image preload failed for ${url}`));
+    }
+    function abort(): void {
+      cleanup();
+      image.src = "";
+      reject(new DOMException("Image preload was aborted.", "AbortError"));
+    }
+
+    image.onload = complete;
+    image.onerror = fail;
+    signal.addEventListener("abort", abort, { once: true });
+    image.src = url;
+  });
 }
 
 function markGenerationPlaceholdersFailed(editor: Editor, placeholderSet: ActiveGenerationPlaceholders, error: string): void {
@@ -833,10 +921,18 @@ function resolveCanvasAssetUrl(asset: TLAsset, context: TLAssetContext): string 
     return sourceUrl;
   }
 
-  return `/api/assets/${encodeURIComponent(localAssetId)}/preview?width=${previewWidthForAssetContext(asset, context)}`;
+  const previewWidth = Math.max(
+    previewWidthForAssetContext(asset, context),
+    initialCanvasPreviewWidths.get(localAssetId) ?? ASSET_PREVIEW_WIDTHS[0]
+  );
+  return assetPreviewUrl(localAssetId, previewWidth);
 }
 
-function previewWidthForAssetContext(asset: Extract<TLAsset, { type: "image" }>, context: TLAssetContext): number {
+function assetPreviewUrl(assetId: string, width: number): string {
+  return `/api/assets/${encodeURIComponent(assetId)}/preview?width=${width}`;
+}
+
+function previewWidthForAssetContext(asset: Extract<TLAsset, { type: "image" }>, context: TLAssetContext): AssetPreviewWidth {
   const dpr = Number.isFinite(context.dpr) && context.dpr > 0 ? context.dpr : window.devicePixelRatio || 1;
   const requestedWidth = Math.max(1, Math.ceil(asset.props.w * context.screenScale * dpr));
   return ASSET_PREVIEW_WIDTHS.find((widthValue) => widthValue >= requestedWidth) ?? ASSET_PREVIEW_WIDTHS[ASSET_PREVIEW_WIDTHS.length - 1];
@@ -1047,7 +1143,80 @@ function SaveStatusIcon({ status }: { status: SaveStatus }) {
 }
 
 function BrandMark({ className = "" }: { className?: string }) {
-  return <span className={`brand-mark ${className}`} aria-hidden="true" />;
+  return (
+    <span className={`brand-mark ${className}`} aria-hidden="true">
+      <span className="brand-mark__aperture" />
+      <span className="brand-mark__spark" />
+    </span>
+  );
+}
+
+function BrandName() {
+  return (
+    <p className="brand-name" title="gpt-image-canvas">
+      <span className="brand-name__prefix">gpt</span>
+      <span className="brand-name__dash">-</span>
+      <span className="brand-name__image">image</span>
+      <span className="brand-name__dash">-</span>
+      <span className="brand-name__canvas">canvas</span>
+    </p>
+  );
+}
+
+function TopNavigation({
+  route,
+  onNavigate,
+  onPreloadGallery
+}: {
+  route: AppRoute;
+  onNavigate: (route: AppRoute) => void;
+  onPreloadGallery: () => void;
+}) {
+  return (
+    <header className="top-navigation">
+      <div className="top-navigation__inner">
+        <div className="brand-lockup min-w-0">
+          <BrandMark />
+          <div className="min-w-0">
+            <BrandName />
+            <p className="brand-tagline">本地 AI 图像画布</p>
+          </div>
+        </div>
+        <nav aria-label="主要页面" className="top-navigation__links">
+          <a
+            aria-current={route === "canvas" ? "page" : undefined}
+            className="top-navigation__link"
+            data-active={route === "canvas"}
+            data-testid="nav-canvas"
+            href="/"
+            onClick={(event) => {
+              event.preventDefault();
+              onNavigate("canvas");
+            }}
+          >
+            <Square className="size-4" aria-hidden="true" />
+            画布
+          </a>
+          <a
+            aria-current={route === "gallery" ? "page" : undefined}
+            className="top-navigation__link"
+            data-active={route === "gallery"}
+            data-testid="nav-gallery"
+            href="/gallery"
+            onFocus={onPreloadGallery}
+            onMouseEnter={onPreloadGallery}
+            onClick={(event) => {
+              event.preventDefault();
+              onNavigate("gallery");
+            }}
+          >
+            <ImageIcon className="size-4" aria-hidden="true" />
+            Gallery
+          </a>
+        </nav>
+      </div>
+    </header>
+  );
 }
 
 function PanelStatusIcon({ tone }: { tone: PanelStatusTone }) {
@@ -1067,6 +1236,7 @@ function PanelStatusIcon({ tone }: { tone: PanelStatusTone }) {
 }
 
 export function App() {
+  const [route, setRoute] = useState<AppRoute>(() => routeFromLocation());
   const [generationMode, setGenerationMode] = useState<GenerationMode>("text");
   const [prompt, setPrompt] = useState("");
   const [stylePreset, setStylePreset] = useState<StylePresetId>("none");
@@ -1077,7 +1247,6 @@ export function App() {
   const [quality, setQuality] = useState<ImageQuality>("auto");
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("png");
   const [activeGenerationCount, setActiveGenerationCount] = useState(0);
-  const [hasSubmitted, setHasSubmitted] = useState(false);
   const [isProjectLoaded, setIsProjectLoaded] = useState(false);
   const [projectSnapshot, setProjectSnapshot] = useState<PersistedSnapshot | undefined>();
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("loading");
@@ -1111,11 +1280,20 @@ export function App() {
   const trimmedPrompt = prompt.trim();
   const promptValidationMessage = prompt.trim() ? "" : "请输入提示词。";
   const dimensionValidationMessage = sizeValidationMessage(width, height);
-  const validationMessage = ((hasSubmitted || Boolean(dimensionValidationMessage)) && promptValidationMessage) || dimensionValidationMessage;
-  const shouldShowValidation = Boolean(validationMessage);
   const isReferenceMode = generationMode === "reference";
   const isReferenceReady = isReferenceMode && referenceSelection.status === "ready";
-  const canGenerate = !dimensionValidationMessage && (generationMode === "text" || isReferenceReady);
+  const referenceValidationMessage = isReferenceMode && !isReferenceReady ? referenceSelection.hint : "";
+  const validationMessage = promptValidationMessage || dimensionValidationMessage || referenceValidationMessage;
+  const shouldShowValidation = Boolean(validationMessage);
+  const canGenerate = !validationMessage;
+
+  const navigateToRoute = useCallback((nextRoute: AppRoute): void => {
+    const nextPath = pathForRoute(nextRoute);
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState(null, "", nextPath);
+    }
+    setRoute(nextRoute);
+  }, []);
 
   const visibleHistory = useMemo(
     () => (isHistoryExpanded ? generationHistory : generationHistory.slice(0, HISTORY_COLLAPSED_LIMIT)),
@@ -1174,6 +1352,17 @@ export function App() {
     shouldShowValidation,
     validationMessage
   ]);
+
+  useEffect(() => {
+    const updateRoute = (): void => {
+      setRoute(routeFromLocation());
+    };
+
+    window.addEventListener("popstate", updateRoute);
+    return () => {
+      window.removeEventListener("popstate", updateRoute);
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -1552,7 +1741,6 @@ export function App() {
 
   function applyPromptStarter(starter: string): void {
     setPrompt(starter);
-    setHasSubmitted(false);
     setGenerationError("");
     setGenerationMessage("");
     setGenerationWarning("");
@@ -1564,7 +1752,6 @@ export function App() {
     resolveReference?: (signal: AbortSignal) => Promise<GenerationReferenceInput | undefined>,
     referenceAssetId?: string
   ): Promise<void> {
-    setHasSubmitted(true);
     setGenerationError("");
     setGenerationMessage("");
     setGenerationWarning("");
@@ -1645,6 +1832,11 @@ export function App() {
         throw new Error("生成服务返回了无法识别的结果。");
       }
 
+      if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
+        return;
+      }
+
+      await preloadGenerationRecordPreviews(body.record, controller.signal);
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
         return;
       }
@@ -1825,6 +2017,48 @@ export function App() {
     setGenerationMessage("已打开原始资源下载。");
   }
 
+  function reuseGalleryImage(item: GalleryImageItem): void {
+    const nextPresetId = coerceStylePresetId(item.presetId);
+    const nextSizePresetId = sizePresetIdForSize(item.size.width, item.size.height);
+
+    setPrompt(item.prompt);
+    setStylePreset(nextPresetId);
+    setSizePresetId(nextSizePresetId);
+    setWidth(item.size.width);
+    setHeight(item.size.height);
+    setQuality(item.quality);
+    setOutputFormat(item.outputFormat);
+    setCount(1);
+    setGenerationMode("text");
+    setGenerationError("");
+    setGenerationWarning("");
+    setGenerationMessage("已从 Gallery 填入生成参数。");
+    navigateToRoute("canvas");
+    if (isMobileDrawer) {
+      setIsAiPanelOpen(true);
+    }
+  }
+
+  function removeGalleryOutputFromHistory(outputId: string): void {
+    setGenerationHistory((history) =>
+      history.flatMap((record) => {
+        const nextOutputs = record.outputs.filter((output) => output.id !== outputId);
+        if (nextOutputs.length === record.outputs.length) {
+          return [record];
+        }
+        if (nextOutputs.length === 0) {
+          return [];
+        }
+        return [
+          {
+            ...record,
+            outputs: nextOutputs
+          }
+        ];
+      })
+    );
+  }
+
   async function copyHistoryPrompt(record: GenerationRecord): Promise<void> {
     const promptText = record.prompt.trim();
     setGenerationError("");
@@ -1869,7 +2103,9 @@ export function App() {
   }
 
   return (
-    <main className="app-shell relative flex h-dvh min-h-[640px] overflow-hidden bg-neutral-950 text-neutral-900">
+    <div className="app-root">
+      <TopNavigation route={route} onNavigate={navigateToRoute} onPreloadGallery={preloadGalleryPage} />
+      <main className="app-shell app-view relative flex min-h-0 overflow-hidden bg-neutral-950 text-neutral-900" data-active-route={route} hidden={route !== "canvas"}>
       <section
         className="relative min-w-0 flex-1 bg-neutral-100 outline-none"
         aria-label="gpt-image-canvas 创作画布"
@@ -1880,6 +2116,7 @@ export function App() {
         {isProjectLoaded ? (
           <Tldraw
             assets={canvasAssetStore}
+            components={tldrawComponents}
             licenseKey={TLDRAW_LICENSE_KEY}
             options={tldrawOptions}
             snapshot={projectSnapshot}
@@ -1937,7 +2174,7 @@ export function App() {
             <div className="brand-lockup">
               <BrandMark />
               <div className="min-w-0">
-                <p className="brand-name">gpt-image-canvas</p>
+                <BrandName />
                 <p className="brand-tagline">本地 AI 图像画布</p>
               </div>
             </div>
@@ -2018,7 +2255,10 @@ export function App() {
           <label className="block">
             <span className="control-label">提示词</span>
             <textarea
-              className="mt-2 h-32 w-full resize-none rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm leading-6 text-neutral-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+              aria-invalid={Boolean(promptValidationMessage)}
+              className="prompt-textarea mt-2 h-32 w-full resize-none rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm leading-6 text-neutral-950 outline-none transition focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+              id="prompt-input"
+              name="prompt"
               placeholder="描述画面主体、场景、光线、构图和关键细节"
               value={prompt}
               data-testid="prompt-input"
@@ -2071,9 +2311,15 @@ export function App() {
                     {referenceSelection.hint}
                   </p>
                   {referenceSelection.status === "ready" ? (
-                    <div className="mt-3 flex items-center gap-2">
+                    <div className="reference-preview-card">
+                      <img
+                        alt={`参考图：${referenceSelection.name}`}
+                        className="reference-preview-card__image"
+                        src={referenceSelection.sourceUrl}
+                      />
                       <p className="min-w-0 flex-1 truncate text-xs font-medium" data-testid="reference-name">
-                        {referenceSelection.name} · {Math.round(referenceSelection.width)} x {Math.round(referenceSelection.height)}
+                        {referenceSelection.name}
+                        <span>{Math.round(referenceSelection.width)} x {Math.round(referenceSelection.height)}</span>
                       </p>
                       <button
                         className="secondary-action h-8 shrink-0 px-2 text-xs"
@@ -2095,6 +2341,8 @@ export function App() {
             <span className="control-label">风格</span>
             <select
               className="field-control"
+              id="style-preset"
+              name="stylePreset"
               value={stylePreset}
               data-testid="style-preset"
               onChange={(event) => setStylePreset(event.target.value as StylePresetId)}
@@ -2107,30 +2355,62 @@ export function App() {
             </select>
           </label>
 
-          <label className="block">
+          <div>
             <span className="control-label">尺寸</span>
-            <select
-              className="field-control"
-              value={sizePresetId}
-              data-testid="scene-preset"
-              onChange={(event) => selectScenePreset(event.target.value)}
-            >
-              {SIZE_PRESETS.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {sizePresetOptionLabel(preset)}
-                </option>
+            <div className="quick-size-grid" data-testid="quick-size-presets">
+              {quickSizePresets.map((preset) => (
+                <button
+                  aria-pressed={sizePresetId === preset.id}
+                  className={sizePresetId === preset.id ? "quick-size-button is-active" : "quick-size-button"}
+                  key={preset.id}
+                  type="button"
+                  onClick={() => selectScenePreset(preset.id)}
+                >
+                  <span>{sizePresetLabel(preset)}</span>
+                  <small>
+                    {preset.width} x {preset.height}
+                  </small>
+                </button>
               ))}
-              <option value={CUSTOM_SIZE_PRESET_ID}>自定义尺寸</option>
-            </select>
-          </label>
+              <button
+                aria-pressed={sizePresetId === CUSTOM_SIZE_PRESET_ID}
+                className={sizePresetId === CUSTOM_SIZE_PRESET_ID ? "quick-size-button is-active" : "quick-size-button"}
+                type="button"
+                onClick={() => selectScenePreset(CUSTOM_SIZE_PRESET_ID)}
+              >
+                <span>自定义</span>
+                <small>手动输入</small>
+              </button>
+            </div>
+            <label className="mt-3 block">
+              <span className="sr-only">全部尺寸</span>
+              <select
+                className="field-control"
+                id="scene-preset"
+                name="scenePreset"
+                value={sizePresetId}
+                data-testid="scene-preset"
+                onChange={(event) => selectScenePreset(event.target.value)}
+              >
+                {SIZE_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {sizePresetOptionLabel(preset)}
+                  </option>
+                ))}
+                <option value={CUSTOM_SIZE_PRESET_ID}>自定义尺寸</option>
+              </select>
+            </label>
+          </div>
 
           <div className="grid grid-cols-2 gap-3">
             <label>
               <span className="control-label">宽度</span>
               <input
                 className="field-control"
+                id="custom-width"
                 min={MIN_IMAGE_DIMENSION}
                 max={MAX_IMAGE_DIMENSION}
+                name="width"
                 step={1}
                 type="number"
                 value={Number.isNaN(width) ? "" : width}
@@ -2142,8 +2422,10 @@ export function App() {
               <span className="control-label">高度</span>
               <input
                 className="field-control"
+                id="custom-height"
                 min={MIN_IMAGE_DIMENSION}
                 max={MAX_IMAGE_DIMENSION}
+                name="height"
                 step={1}
                 type="number"
                 value={Number.isNaN(height) ? "" : height}
@@ -2179,6 +2461,8 @@ export function App() {
                 <span className="control-label">质量</span>
                 <select
                   className="field-control"
+                  id="quality-select"
+                  name="quality"
                   value={quality}
                   data-testid="quality-select"
                   onChange={(event) => setQuality(event.target.value as ImageQuality)}
@@ -2195,6 +2479,8 @@ export function App() {
                 <span className="control-label">输出格式</span>
                 <select
                   className="field-control"
+                  id="format-select"
+                  name="outputFormat"
                   value={outputFormat}
                   data-testid="format-select"
                   onChange={(event) => setOutputFormat(event.target.value as OutputFormat)}
@@ -2362,6 +2648,7 @@ export function App() {
             data-generation-mode={generationMode}
             data-reference-mode={isReferenceReady ? "edit" : "generate"}
             data-testid="generate-button"
+            title={validationMessage || undefined}
             onClick={submitGeneration}
           >
             {isReferenceReady ? (
@@ -2420,6 +2707,8 @@ export function App() {
                   checked={storageForm.enabled}
                   className="size-4 accent-blue-600"
                   data-testid="storage-enabled"
+                  id="storage-enabled"
+                  name="storageEnabled"
                   type="checkbox"
                   onChange={(event) => updateStorageForm({ enabled: event.target.checked })}
                 />
@@ -2431,6 +2720,8 @@ export function App() {
                   <input
                     className="field-control"
                     data-testid="storage-secret-id"
+                    id="storage-secret-id"
+                    name="storageSecretId"
                     value={storageForm.secretId}
                     onChange={(event) => updateStorageForm({ secretId: event.target.value })}
                   />
@@ -2440,6 +2731,8 @@ export function App() {
                   <input
                     className="field-control"
                     data-testid="storage-secret-key"
+                    id="storage-secret-key"
+                    name="storageSecretKey"
                     type={storageSecretTouched ? "password" : "text"}
                     value={storageForm.secretKey}
                     onChange={(event) => {
@@ -2453,6 +2746,8 @@ export function App() {
                   <input
                     className="field-control"
                     data-testid="storage-bucket"
+                    id="storage-bucket"
+                    name="storageBucket"
                     value={storageForm.bucket}
                     onChange={(event) => updateStorageForm({ bucket: event.target.value })}
                   />
@@ -2462,6 +2757,8 @@ export function App() {
                   <input
                     className="field-control"
                     data-testid="storage-region"
+                    id="storage-region"
+                    name="storageRegion"
                     value={storageForm.region}
                     onChange={(event) => updateStorageForm({ region: event.target.value })}
                   />
@@ -2471,6 +2768,8 @@ export function App() {
                   <input
                     className="field-control"
                     data-testid="storage-prefix"
+                    id="storage-prefix"
+                    name="storagePrefix"
                     value={storageForm.keyPrefix}
                     onChange={(event) => updateStorageForm({ keyPrefix: event.target.value })}
                   />
@@ -2503,6 +2802,21 @@ export function App() {
           </div>
         </div>
       ) : null}
-    </main>
+      </main>
+      {route === "gallery" ? (
+        <Suspense
+          fallback={
+            <main className="gallery-page app-view" data-testid="gallery-loading-page">
+              <div className="gallery-empty-state gallery-empty-state--boot" role="status">
+                <Loader2 className="size-5 animate-spin" aria-hidden="true" />
+                <p>正在载入 Gallery...</p>
+              </div>
+            </main>
+          }
+        >
+          <LazyGalleryPage onDeleted={removeGalleryOutputFromHistory} onReuse={reuseGalleryImage} />
+        </Suspense>
+      ) : null}
+    </div>
   );
 }

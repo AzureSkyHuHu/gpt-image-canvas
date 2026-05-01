@@ -29,7 +29,10 @@ import {
   type TLShapeId,
   type TLStoreSnapshot,
   type TLComponents,
-  type TldrawOptions
+  type TldrawOptions,
+  useIsDarkMode,
+  useEditor,
+  useValue
 } from "tldraw";
 import {
   GENERATION_PLACEHOLDER_TYPE,
@@ -45,7 +48,9 @@ import {
   OUTPUT_FORMATS,
   SIZE_PRESETS,
   STYLE_PRESETS,
+  resolutionTierForSize,
   validateImageSize,
+  type AssetMetadataResponse,
   type GalleryImageItem,
   type GenerationCount,
   type GenerationRecord,
@@ -57,6 +62,7 @@ import {
   type OutputFormat,
   type ProjectState,
   type ReferenceImageInput,
+  type ResolutionTier,
   type SaveStorageConfigRequest,
   type SizePreset,
   type StorageConfigResponse,
@@ -73,13 +79,16 @@ type AssetPreviewWidth = (typeof ASSET_PREVIEW_WIDTHS)[number];
 const GENERATED_ASSET_INITIAL_PREVIEW_WIDTH: AssetPreviewWidth = 2048;
 const SUPPORTED_REFERENCE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
 const initialCanvasPreviewWidths = new Map<string, AssetPreviewWidth>();
+const assetMetadataCache = new Map<string, ImageSize>();
+const assetMetadataRequests = new Map<string, Promise<ImageSize | undefined>>();
+const RESOLUTION_BADGE_BASE_OFFSET = 7;
+const RESOLUTION_BADGE_MIN_SCALE = 0.52;
+const RESOLUTION_BADGE_SMALL_IMAGE_SIDE = 32;
+const RESOLUTION_BADGE_FULL_SIZE_IMAGE_SIDE = 220;
 const shapeUtils = [GenerationPlaceholderShapeUtil];
 const tldrawOptions = {
   debouncedZoomThreshold: 80
 } satisfies Partial<TldrawOptions>;
-const tldrawComponents = {
-  StylePanel: null
-} satisfies TLComponents;
 const TLDRAW_LICENSE_KEY =
   "tldraw-2026-08-08/WyJ3dGU4bldjRyIsWyIqIl0sMTYsIjIwMjYtMDgtMDgiXQ.Xt7lTydUhMnKfHfp+g8Mrs9gtJjlB8uPyYMniFEfRfruCYdYEl9J0uZl0lMAf6o7GdDB1zXOVhWLFAipssI6Cw";
 
@@ -123,6 +132,8 @@ const promptStarters = [
 ] as const;
 const quickSizePresetIds = new Set(["square-1k", "poster-portrait", "poster-landscape", "story-9-16", "video-16-9", "wide-2k"]);
 const quickSizePresets = SIZE_PRESETS.filter((preset) => quickSizePresetIds.has(preset.id));
+const PRIMARY_GENERATION_COUNTS: readonly GenerationCount[] = [1, 2, 4];
+const EXTENDED_GENERATION_COUNTS: readonly GenerationCount[] = [8, 16];
 
 type GalleryPageModule = { default: typeof import("./GalleryPage").GalleryPage };
 let galleryPageModulePromise: Promise<GalleryPageModule> | undefined;
@@ -331,6 +342,51 @@ function isGenerationResponse(value: unknown): value is GenerationResponse {
   return typeof value === "object" && value !== null && "record" in value;
 }
 
+function failedOutputMessages(record: GenerationRecord): string[] {
+  const seen = new Set<string>();
+  const messages: string[] = [];
+
+  for (const output of record.outputs) {
+    if (output.status !== "failed") {
+      continue;
+    }
+
+    const message = output.error?.trim();
+    if (!message || seen.has(message)) {
+      continue;
+    }
+
+    seen.add(message);
+    messages.push(message);
+  }
+
+  return messages;
+}
+
+function generationFailureMessage(record: GenerationRecord): string {
+  const summary = record.error?.trim();
+  const firstFailure = failedOutputMessages(record)[0];
+
+  if (firstFailure) {
+    return summary && summary !== firstFailure ? `${summary} 失败原因：${firstFailure}` : firstFailure;
+  }
+
+  return summary || "没有可插入的成功图像。";
+}
+
+function generationWarningMessage(record: GenerationRecord, insertedCount: number, failedCount: number, cloudFailedCount: number): string {
+  const parts = [`已向画布插入 ${insertedCount} 张图像`];
+  if (failedCount > 0) {
+    parts.push(`${failedCount} 张生成失败`);
+  }
+  if (cloudFailedCount > 0) {
+    parts.push(`本地已保存，${cloudFailedCount} 张云端上传失败`);
+  }
+
+  const firstFailure = failedOutputMessages(record)[0];
+  return firstFailure ? `${parts.join("，")}。失败原因：${firstFailure}` : `${parts.join("，")}。`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -498,7 +554,7 @@ function displaySize(size: ImageSize): { width: number; height: number } {
 
 function createCenteredPlacements(editor: Editor, countValue: GenerationCount, size: ImageSize): GenerationPlaceholderPlacement[] {
   const placeholderSize = displaySize(size);
-  const columns = countValue === 1 ? 1 : 2;
+  const columns = countValue >= 8 ? 4 : countValue === 1 ? 1 : 2;
   const rows = Math.ceil(countValue / columns);
   const gap = 48;
   const cellWidth = placeholderSize.width;
@@ -584,6 +640,10 @@ function livePlacement(editor: Editor, placement: GenerationPlaceholderPlacement
 
 function createImageAsset(asset: GeneratedAsset): TLAsset {
   initialCanvasPreviewWidths.set(asset.id, GENERATED_ASSET_INITIAL_PREVIEW_WIDTH);
+  rememberAssetMetadata(asset.id, {
+    width: asset.width,
+    height: asset.height
+  });
 
   return {
     id: createTldrawAssetId(asset.id),
@@ -1018,6 +1078,250 @@ function previewWidthForAssetContext(asset: Extract<TLAsset, { type: "image" }>,
   return ASSET_PREVIEW_WIDTHS.find((widthValue) => widthValue >= requestedWidth) ?? ASSET_PREVIEW_WIDTHS[ASSET_PREVIEW_WIDTHS.length - 1];
 }
 
+interface CanvasResolutionBadgeTarget {
+  localAssetId?: string;
+  fallbackSize: ImageSize;
+  badgeScale: number;
+  screenX: number;
+  screenY: number;
+}
+
+interface ClientPoint {
+  x: number;
+  y: number;
+}
+
+function CanvasResolutionBadgeOverlay() {
+  const editor = useEditor();
+  const pointerClientPoint = usePointerClientPoint(editor);
+  const target = useValue("canvas resolution badge target", () => getCanvasResolutionBadgeTarget(editor, pointerClientPoint), [
+    editor,
+    pointerClientPoint?.x,
+    pointerClientPoint?.y
+  ]);
+  const [loadedMetadata, setLoadedMetadata] = useState<{ assetId: string; size: ImageSize } | undefined>();
+
+  const localAssetId = target?.localAssetId;
+  const cachedMetadata = localAssetId ? assetMetadataCache.get(localAssetId) : undefined;
+  const loadedSize = loadedMetadata && loadedMetadata.assetId === localAssetId ? loadedMetadata.size : undefined;
+  const resolvedSize = localAssetId ? (cachedMetadata ?? loadedSize) : target?.fallbackSize;
+
+  useEffect(() => {
+    if (!localAssetId || assetMetadataCache.has(localAssetId)) {
+      return;
+    }
+
+    let isActive = true;
+    void fetchAssetMetadata(localAssetId).then((size) => {
+      if (isActive && size) {
+        setLoadedMetadata({ assetId: localAssetId, size });
+      }
+    });
+
+    return () => {
+      isActive = false;
+    };
+  }, [localAssetId]);
+
+  if (!target || !resolvedSize) {
+    return null;
+  }
+
+  const tier: ResolutionTier = resolutionTierForSize(resolvedSize);
+
+  return (
+    <span
+      aria-hidden="true"
+      className="canvas-resolution-badge"
+      data-resolution-tier={tier}
+      data-testid="canvas-resolution-badge"
+      style={{
+        transform: `translate3d(${Math.round(target.screenX + resolutionBadgeOffset(target.badgeScale))}px, ${Math.round(
+          target.screenY + resolutionBadgeOffset(target.badgeScale)
+        )}px, 0) scale(${target.badgeScale})`
+      }}
+    >
+      {tier}
+    </span>
+  );
+}
+
+function usePointerClientPoint(editor: Editor): ClientPoint | undefined {
+  const [point, setPoint] = useState<ClientPoint | undefined>();
+  const frameRef = useRef<number | undefined>();
+  const latestPointRef = useRef<ClientPoint | undefined>();
+
+  useEffect(() => {
+    const ownerWindow = editor.getContainer().ownerDocument.defaultView ?? window;
+
+    const updatePoint = (nextPoint: ClientPoint | undefined) => {
+      latestPointRef.current = nextPoint;
+      if (frameRef.current !== undefined) {
+        return;
+      }
+
+      frameRef.current = ownerWindow.requestAnimationFrame(() => {
+        frameRef.current = undefined;
+        setPoint(latestPointRef.current);
+      });
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      updatePoint({
+        x: event.clientX,
+        y: event.clientY
+      });
+    };
+    const handlePointerLeave = () => updatePoint(undefined);
+
+    ownerWindow.addEventListener("pointermove", handlePointerMove, { passive: true });
+    ownerWindow.addEventListener("pointerleave", handlePointerLeave);
+    ownerWindow.addEventListener("blur", handlePointerLeave);
+
+    return () => {
+      ownerWindow.removeEventListener("pointermove", handlePointerMove);
+      ownerWindow.removeEventListener("pointerleave", handlePointerLeave);
+      ownerWindow.removeEventListener("blur", handlePointerLeave);
+      if (frameRef.current !== undefined) {
+        ownerWindow.cancelAnimationFrame(frameRef.current);
+      }
+    };
+  }, [editor]);
+
+  return point;
+}
+
+function getCanvasResolutionBadgeTarget(editor: Editor, pointerClientPoint: ClientPoint | undefined): CanvasResolutionBadgeTarget | undefined {
+  const imageShape = getImageShapeUnderPointer(editor, pointerClientPoint);
+  if (!imageShape) {
+    return undefined;
+  }
+
+  const bounds = editor.getShapePageBounds(imageShape);
+  if (!bounds) {
+    return undefined;
+  }
+
+  const asset = imageShape.props.assetId ? editor.getAsset(imageShape.props.assetId) : undefined;
+  const sourceUrl = getImageSourceUrl(imageShape, asset);
+  const localAssetId = getLocalAssetId(asset, sourceUrl);
+  const topLeft = editor.pageToScreen({ x: bounds.x, y: bounds.y });
+  const bottomRight = editor.pageToScreen({ x: bounds.x + bounds.w, y: bounds.y + bounds.h });
+  const containerRect = editor.getContainer().getBoundingClientRect();
+  const screenWidth = Math.abs(bottomRight.x - topLeft.x);
+  const screenHeight = Math.abs(bottomRight.y - topLeft.y);
+
+  return {
+    localAssetId,
+    fallbackSize: fallbackImageSize(imageShape, asset),
+    badgeScale: resolutionBadgeScale(screenWidth, screenHeight, containerRect.width),
+    screenX: topLeft.x - containerRect.left,
+    screenY: topLeft.y - containerRect.top
+  };
+}
+
+function resolutionBadgeScale(screenWidth: number, screenHeight: number, canvasWidth: number): number {
+  const imageShortSide = Math.max(0, Math.min(screenWidth, screenHeight));
+  const imageScale =
+    imageShortSide >= RESOLUTION_BADGE_FULL_SIZE_IMAGE_SIDE
+      ? 1
+      : RESOLUTION_BADGE_MIN_SCALE +
+        ((Math.max(imageShortSide, RESOLUTION_BADGE_SMALL_IMAGE_SIDE) - RESOLUTION_BADGE_SMALL_IMAGE_SIDE) /
+          (RESOLUTION_BADGE_FULL_SIZE_IMAGE_SIDE - RESOLUTION_BADGE_SMALL_IMAGE_SIDE)) *
+          (1 - RESOLUTION_BADGE_MIN_SCALE);
+  const canvasScale = canvasWidth < 520 ? 0.78 : canvasWidth < 760 ? 0.88 : 1;
+
+  return Math.max(RESOLUTION_BADGE_MIN_SCALE, Math.min(1, imageScale, canvasScale));
+}
+
+function resolutionBadgeOffset(scale: number): number {
+  return Math.max(4, RESOLUTION_BADGE_BASE_OFFSET * scale);
+}
+
+function getImageShapeUnderPointer(editor: Editor, pointerClientPoint: ClientPoint | undefined): TLImageShape | undefined {
+  if (!pointerClientPoint || !isPointerOverCanvas(editor, pointerClientPoint)) {
+    return undefined;
+  }
+
+  const shapeAtPoint = editor.getShapeAtPoint(editor.screenToPage(pointerClientPoint), {
+    hitInside: true,
+    renderingOnly: true,
+    filter: (shape) => shape.type === "image"
+  });
+
+  return shapeAtPoint?.type === "image" ? (shapeAtPoint as TLImageShape) : undefined;
+}
+
+function isPointerOverCanvas(editor: Editor, pointerClientPoint: ClientPoint): boolean {
+  const target = editor.getContainer().ownerDocument.elementFromPoint(pointerClientPoint.x, pointerClientPoint.y);
+  return Boolean(target?.closest(".tl-canvas"));
+}
+
+function fallbackImageSize(imageShape: TLImageShape, asset: TLAsset | undefined): ImageSize {
+  if (asset?.type === "image" && isUsableImageSize(asset.props)) {
+    return {
+      width: asset.props.w,
+      height: asset.props.h
+    };
+  }
+
+  return {
+    width: imageShape.props.w,
+    height: imageShape.props.h
+  };
+}
+
+function isUsableImageSize(size: { width?: unknown; height?: unknown; w?: unknown; h?: unknown }): boolean {
+  const width = typeof size.width === "number" ? size.width : size.w;
+  const height = typeof size.height === "number" ? size.height : size.h;
+  return typeof width === "number" && typeof height === "number" && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
+}
+
+function rememberAssetMetadata(assetId: string, size: ImageSize): void {
+  if (isUsableImageSize(size)) {
+    assetMetadataCache.set(assetId, size);
+  }
+}
+
+async function fetchAssetMetadata(assetId: string): Promise<ImageSize | undefined> {
+  const cached = assetMetadataCache.get(assetId);
+  if (cached) {
+    return cached;
+  }
+
+  const existingRequest = assetMetadataRequests.get(assetId);
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = fetch(`/api/assets/${encodeURIComponent(assetId)}/metadata`)
+    .then(async (response) => {
+      if (!response.ok) {
+        return undefined;
+      }
+
+      const body = (await response.json()) as AssetMetadataResponse;
+      const size = {
+        width: body.width,
+        height: body.height
+      };
+
+      if (body.id !== assetId || !isUsableImageSize(size)) {
+        return undefined;
+      }
+
+      rememberAssetMetadata(assetId, size);
+      return size;
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      assetMetadataRequests.delete(assetId);
+    });
+
+  assetMetadataRequests.set(assetId, request);
+  return request;
+}
+
 function findCanvasImageShape(editor: Editor, record: GenerationRecord): TLShapeId | undefined {
   const cleanup = canvasGenerationCleanupForRecord(record);
   if (cleanup.assetIds.size === 0 && !cleanup.generationId) {
@@ -1343,6 +1647,16 @@ function TopNavigation({
   );
 }
 
+function CanvasThemeSync({ onChange }: { onChange: (isDarkMode: boolean) => void }) {
+  const isDarkMode = useIsDarkMode();
+
+  useEffect(() => {
+    onChange(isDarkMode);
+  }, [isDarkMode, onChange]);
+
+  return null;
+}
+
 function PanelStatusIcon({ tone }: { tone: PanelStatusTone }) {
   if (tone === "progress") {
     return <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" aria-hidden="true" />;
@@ -1393,6 +1707,7 @@ export function App() {
   const [isStorageSaving, setIsStorageSaving] = useState(false);
   const [isStorageTesting, setIsStorageTesting] = useState(false);
   const [referenceSelection, setReferenceSelection] = useState<ReferenceSelection>(missingReferenceSelection);
+  const [isCanvasDarkMode, setIsCanvasDarkMode] = useState(false);
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const panelCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<Editor | null>(null);
@@ -1444,6 +1759,19 @@ export function App() {
   const validationMessage = promptValidationMessage || dimensionValidationMessage || referenceValidationMessage;
   const shouldShowValidation = Boolean(validationMessage);
   const canGenerate = !validationMessage;
+  const tldrawComponents = useMemo(
+    () =>
+      ({
+        InFrontOfTheCanvas: () => (
+          <>
+            <CanvasThemeSync onChange={setIsCanvasDarkMode} />
+            <CanvasResolutionBadgeOverlay />
+          </>
+        ),
+        StylePanel: null
+      }) satisfies TLComponents,
+    []
+  );
 
   const navigateToRoute = useCallback((nextRoute: AppRoute): void => {
     const nextPath = pathForRoute(nextRoute);
@@ -1459,6 +1787,7 @@ export function App() {
   );
   const hiddenHistoryCount = Math.max(0, generationHistory.length - HISTORY_COLLAPSED_LIMIT);
   const hasAdditionalHistory = hiddenHistoryCount > 0;
+  const isExtendedCountSelected = EXTENDED_GENERATION_COUNTS.includes(count);
   const panelStatus = useMemo<PanelStatus | null>(() => {
     if (isGenerating) {
       return {
@@ -1884,6 +2213,7 @@ export function App() {
 
     const inputValidationMessage = generationValidationMessage(input.prompt, input.size.width, input.size.height);
     if (inputValidationMessage) {
+      setGenerationWarning(inputValidationMessage);
       return;
     }
 
@@ -1976,18 +2306,14 @@ export function App() {
         Math.max(0, placeholderSet.placements.length - body.record.outputs.length);
       const cloudFailedCount = cloudFailureCount(body.record);
       if (insertedCount > 0) {
-        if (cloudFailedCount > 0) {
-          setGenerationWarning(`已向画布插入 ${insertedCount} 张图像，本地已保存，${cloudFailedCount} 张云端上传失败。`);
+        if (cloudFailedCount > 0 || failedCount > 0) {
+          setGenerationWarning(generationWarningMessage(body.record, insertedCount, failedCount, cloudFailedCount));
         } else {
-          setGenerationMessage(
-            failedCount > 0
-              ? `已向画布插入 ${insertedCount} 张图像，${failedCount} 张失败。`
-              : `已向画布插入 ${insertedCount} 张图像。`
-          );
+          setGenerationMessage(`已向画布插入 ${insertedCount} 张图像。`);
         }
         showGenerationCompleteNotification(body.record, insertedCount, failedCount);
       } else {
-        setGenerationError(body.record.error || "没有可插入的成功图像。");
+        setGenerationError(generationFailureMessage(body.record));
       }
     } catch (error) {
       if (controller.signal.aborted || !activeGenerationsRef.current.has(requestId)) {
@@ -2289,7 +2615,7 @@ export function App() {
   }
 
   return (
-    <div className="app-root">
+    <div className="app-root" data-canvas-theme={isCanvasDarkMode ? "dark" : "light"}>
       <TopNavigation route={route} onNavigate={navigateToRoute} onPreloadGallery={preloadGalleryPage} />
       <main className="app-shell app-view relative flex min-h-0 overflow-hidden bg-neutral-950 text-neutral-900" data-active-route={route} hidden={route !== "canvas"}>
       <section
@@ -2624,7 +2950,7 @@ export function App() {
           <div>
             <span className="control-label">数量</span>
             <div className="mt-2 grid grid-cols-3 gap-2">
-              {GENERATION_COUNTS.map((item) => (
+              {PRIMARY_GENERATION_COUNTS.map((item) => (
                 <button
                   className={item === count ? "segmented-control is-active" : "segmented-control"}
                   key={item}
@@ -2635,6 +2961,25 @@ export function App() {
                 </button>
               ))}
             </div>
+
+            <details className="group mt-2 rounded-md border border-neutral-200 bg-neutral-50">
+              <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium text-neutral-800">
+                <span>{isExtendedCountSelected ? `更多数量：${count} 张` : "更多数量"}</span>
+                <ChevronDown className="size-4 shrink-0 text-neutral-500 transition group-open:rotate-180" aria-hidden="true" />
+              </summary>
+              <div className="grid grid-cols-2 gap-2 border-t border-neutral-200 px-3 py-3">
+                {EXTENDED_GENERATION_COUNTS.map((item) => (
+                  <button
+                    className={item === count ? "segmented-control is-active" : "segmented-control"}
+                    key={item}
+                    type="button"
+                    onClick={() => setCount(item)}
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </details>
           </div>
 
           <details className="rounded-md border border-neutral-200 bg-neutral-50">
@@ -2838,6 +3183,14 @@ export function App() {
         </div>
 
         <div className="ai-panel-actions grid grid-cols-1 gap-3 border-t border-neutral-200 bg-white px-5 py-4">
+          {panelStatus ? (
+            <div
+              className={`action-feedback panel-status-strip panel-status--${panelStatus.tone}`}
+              data-testid={`action-${panelStatus.testId}`}
+            >
+              {panelStatus.message}
+            </div>
+          ) : null}
           <button
             className="primary-action"
             disabled={!canGenerate}

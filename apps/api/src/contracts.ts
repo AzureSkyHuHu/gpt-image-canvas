@@ -20,6 +20,7 @@ export type {
   AdminLoginRequest,
   AdminMeResponse,
   AppConfig,
+  AssetMetadataResponse,
   AssetCloudUploadStatus,
   AuthLoginRequest,
   AuthMeResponse,

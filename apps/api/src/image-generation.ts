@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import { and, eq } from "drizzle-orm";
+import sharp from "sharp";
 import type {
+  AssetMetadataResponse,
   GeneratedAsset,
   GeneratedAssetCloudInfo,
   GenerationOutput,
   GenerationRecord,
   GenerationResponse,
   GenerationStatus,
+  ImageSize,
   OutputFormat
 } from "./contracts.js";
 import { db } from "./database.js";
@@ -207,6 +210,24 @@ export async function deleteStoredAsset(owner: DataOwner, assetId: string): Prom
   return true;
 }
 
+export async function readStoredAssetMetadata(owner: DataOwner, assetId: string): Promise<AssetMetadataResponse | undefined> {
+  const asset = await readStoredAsset(owner, assetId);
+  if (!asset) {
+    return undefined;
+  }
+
+  const size = await readImageSize(asset.bytes);
+  if (!size) {
+    return undefined;
+  }
+
+  return {
+    id: asset.file.id,
+    width: size.width,
+    height: size.height
+  };
+}
+
 async function generateSingleOutput(
   owner: DataOwner,
   input: ImageProviderInput,
@@ -309,6 +330,11 @@ async function saveProviderImage(
   const filePath = resolve(runtimePaths.dataDir, relativePath);
   const mimeType = mimeTypes[input.outputFormat];
   const bytes = Buffer.from(image.b64Json, "base64");
+  const imageSize = await readImageSize(bytes);
+
+  if (!imageSize) {
+    throw new ProviderError("unsupported_provider_behavior", "Generated image dimensions could not be read.", 502);
+  }
 
   await localAssetStorage.putObject({ filePath, bytes });
   const cloudStorage = await saveAssetToConfiguredCloud(owner, {
@@ -324,12 +350,28 @@ async function saveProviderImage(
       url: `/api/assets/${assetId}`,
       fileName,
       mimeType,
-      width: input.size.width,
-      height: input.size.height,
+      width: imageSize.width,
+      height: imageSize.height,
       cloud: toGeneratedAssetCloud(cloudStorage)
     },
     cloudStorage
   };
+}
+
+async function readImageSize(bytes: Buffer): Promise<ImageSize | undefined> {
+  try {
+    const metadata = await sharp(bytes).metadata();
+    if (!metadata.width || !metadata.height) {
+      return undefined;
+    }
+
+    return {
+      width: metadata.width,
+      height: metadata.height
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function saveGenerationRecord(owner: DataOwner, input: PersistedGenerationInput, outputs: BatchOutputResult[]): GenerationRecord {
@@ -556,12 +598,20 @@ async function mapWithConcurrency<T, TResult>(
 
 function errorToMessage(error: unknown): string {
   if (error instanceof ProviderError) {
-    return error.message;
+    return sanitizeGenerationErrorMessage(error.message);
   }
   if (error instanceof Error && error.message) {
-    return error.message;
+    return sanitizeGenerationErrorMessage(error.message);
   }
   return "图像生成失败，请重试。";
+}
+
+function sanitizeGenerationErrorMessage(message: string): string {
+  return message
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/giu, "Bearer [redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "sk-[redacted]")
+    .trim()
+    .slice(0, 1200);
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

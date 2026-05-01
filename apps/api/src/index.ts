@@ -57,7 +57,14 @@ import {
   type EditImageProviderInput,
   type ImageProviderInput
 } from "./image-provider.js";
-import { deleteStoredAsset, getStoredAssetFile, readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "./image-generation.js";
+import {
+  deleteStoredAsset,
+  getStoredAssetFile,
+  readStoredAsset,
+  readStoredAssetMetadata,
+  runReferenceImageGeneration,
+  runTextToImageGeneration
+} from "./image-generation.js";
 import {
   deleteGalleryOutput,
   deleteGenerationRecord,
@@ -354,6 +361,15 @@ app.get("/api/assets/:id/preview", async (c) => {
       "Content-Type": "image/webp"
     }
   });
+});
+
+app.get("/api/assets/:id/metadata", async (c) => {
+  const metadata = await readStoredAssetMetadata(currentDataOwner(c), c.req.param("id"));
+  if (!metadata) {
+    return c.json(errorResponse("not_found", "Asset not found."), 404);
+  }
+
+  return c.json(metadata);
 });
 
 app.get("/api/assets/:id/download", async (c) => {
@@ -922,7 +938,7 @@ function parseCount(value: unknown): ParseResult<GenerationCount> {
 
   return {
     ok: false,
-    error: errorResponse("invalid_request", "生成数量只能是 1、2 或 4。")
+    error: errorResponse("invalid_request", "生成数量只能是 1、2、4、8 或 16。")
   };
 }
 

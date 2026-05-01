@@ -41,16 +41,27 @@ export function authConfigWarnings(): string[] {
   if (!accessControlConfig.adminPassword) {
     warnings.push("APP_AUTH_ENABLED=true but APP_ADMIN_PASSWORD is empty; admin token management is disabled.");
   }
-  if (accessControlConfig.sessionSecret.length < 32) {
-    warnings.push("APP_AUTH_ENABLED=true but APP_SESSION_SECRET should be at least 32 characters.");
-  }
   return warnings;
+}
+
+export function assertAuthConfigSafe(): void {
+  if (!isAuthEnabled()) {
+    return;
+  }
+
+  if (accessControlConfig.sessionSecret.length < 32) {
+    throw new Error("APP_AUTH_ENABLED=true requires APP_SESSION_SECRET to be at least 32 characters.");
+  }
 }
 
 export function authMiddleware(): MiddlewareHandler<{ Variables: AuthVariables }> {
   return async (c, next) => {
     const auth = resolveAuthState(c);
     c.set("auth", auth);
+
+    if (isUnsafeMethod(c.req.method) && !passesSameOriginCheck(c)) {
+      return c.json(errorResponse("same_origin_required", "请求来源无效，请从当前站点重试。"), 403);
+    }
 
     if (!isAuthEnabled()) {
       return next();
@@ -184,6 +195,42 @@ function isPublicApiPath(path: string): boolean {
   );
 }
 
+function isUnsafeMethod(method: string): boolean {
+  return method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+}
+
+function passesSameOriginCheck(c: Context): boolean {
+  const secFetchSite = c.req.header("sec-fetch-site")?.trim().toLowerCase();
+  if (secFetchSite === "cross-site") {
+    return false;
+  }
+
+  const origin = c.req.header("origin");
+  if (!origin) {
+    return true;
+  }
+
+  if (secFetchSite === "same-origin") {
+    return true;
+  }
+
+  const originHost = parseHeaderUrlHost(origin);
+  const requestHost = c.req.header("x-forwarded-host") ?? c.req.header("host") ?? parseHeaderUrlHost(c.req.url);
+  return Boolean(originHost && requestHost && normalizeHost(originHost) === normalizeHost(requestHost));
+}
+
+function parseHeaderUrlHost(value: string): string | undefined {
+  try {
+    return new URL(value).host;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeHost(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 function readSessionCookie(c: Context, name: string): SessionPayload | undefined {
   const rawCookie = c.req.header("cookie");
   const cookieValue = parseCookie(rawCookie)[name];
@@ -255,8 +302,7 @@ function verifySignedValue(value: string): SessionPayload | undefined {
 }
 
 function signature(value: string): string {
-  const secret = accessControlConfig.sessionSecret || "gpt-image-canvas-development-session-secret";
-  return createHmac("sha256", secret).update(value).digest("base64url");
+  return createHmac("sha256", accessControlConfig.sessionSecret).update(value).digest("base64url");
 }
 
 function sessionExpiresAt(): number {

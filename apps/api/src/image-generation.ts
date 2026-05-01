@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type {
   GeneratedAsset,
   GeneratedAssetCloudInfo,
@@ -11,6 +11,7 @@ import type {
   OutputFormat
 } from "./contracts.js";
 import { db } from "./database.js";
+import type { DataOwner } from "./data-owner.js";
 import {
   ProviderError,
   type EditImageProviderInput,
@@ -76,14 +77,20 @@ const mimeTypes: Record<OutputFormat, string> = {
   webp: "image/webp"
 };
 
-export async function runTextToImageGeneration(input: ImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<GenerationResponse> {
+export async function runTextToImageGeneration(
+  owner: DataOwner,
+  input: ImageProviderInput,
+  provider: ImageProvider,
+  signal?: AbortSignal
+): Promise<GenerationResponse> {
   const outputs = await mapWithConcurrency(
     Array.from({ length: input.count }, (_, index) => index),
     BATCH_CONCURRENCY,
-    async () => generateSingleOutput(input, provider, signal)
+    async () => generateSingleOutput(owner, input, provider, signal)
   );
 
   const record = saveGenerationRecord(
+    owner,
     {
       ...input,
       mode: "generate"
@@ -97,6 +104,7 @@ export async function runTextToImageGeneration(input: ImageProviderInput, provid
 }
 
 export async function runReferenceImageGeneration(
+  owner: DataOwner,
   input: EditImageProviderInput,
   provider: ImageProvider,
   signal?: AbortSignal
@@ -104,10 +112,11 @@ export async function runReferenceImageGeneration(
   const outputs = await mapWithConcurrency(
     Array.from({ length: input.count }, (_, index) => index),
     BATCH_CONCURRENCY,
-    async () => editSingleOutput(input, provider, signal)
+    async () => editSingleOutput(owner, input, provider, signal)
   );
 
   const record = saveGenerationRecord(
+    owner,
     {
       ...input,
       mode: "edit"
@@ -120,8 +129,12 @@ export async function runReferenceImageGeneration(
   };
 }
 
-export function getStoredAssetFile(assetId: string): StoredAssetFile | undefined {
-  const asset = db.select().from(assets).where(eq(assets.id, assetId)).get();
+export function getStoredAssetFile(owner: DataOwner, assetId: string): StoredAssetFile | undefined {
+  const asset = db
+    .select()
+    .from(assets)
+    .where(and(eq(assets.id, assetId), eq(assets.ownerTokenId, owner.id)))
+    .get();
   if (!asset) {
     return undefined;
   }
@@ -140,8 +153,11 @@ export function getStoredAssetFile(assetId: string): StoredAssetFile | undefined
   };
 }
 
-export async function readStoredAsset(assetId: string): Promise<{ file: StoredAssetFile; bytes: Buffer } | undefined> {
-  const file = getStoredAssetFile(assetId);
+export async function readStoredAsset(
+  owner: DataOwner,
+  assetId: string
+): Promise<{ file: StoredAssetFile; bytes: Buffer } | undefined> {
+  const file = getStoredAssetFile(owner, assetId);
   if (!file) {
     return undefined;
   }
@@ -152,7 +168,7 @@ export async function readStoredAsset(assetId: string): Promise<{ file: StoredAs
       bytes: await localAssetStorage.getObject({ filePath: file.filePath })
     };
   } catch {
-    const bytes = await readCloudAsset(file.cloud);
+    const bytes = await readCloudAsset(owner, file.cloud);
     if (!bytes) {
       return undefined;
     }
@@ -165,7 +181,38 @@ export async function readStoredAsset(assetId: string): Promise<{ file: StoredAs
   }
 }
 
-async function generateSingleOutput(input: ImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<BatchOutputResult> {
+export async function deleteStoredAsset(owner: DataOwner, assetId: string): Promise<boolean> {
+  const file = getStoredAssetFile(owner, assetId);
+  if (!file) {
+    return false;
+  }
+
+  const inUseByOtherOutput = db
+    .select({ id: generationOutputs.id })
+    .from(generationOutputs)
+    .where(and(eq(generationOutputs.ownerTokenId, owner.id), eq(generationOutputs.assetId, assetId)))
+    .get();
+  const inUseAsReference = db
+    .select({ id: generationRecords.id })
+    .from(generationRecords)
+    .where(and(eq(generationRecords.ownerTokenId, owner.id), eq(generationRecords.referenceAssetId, assetId)))
+    .get();
+  if (inUseByOtherOutput || inUseAsReference) {
+    return false;
+  }
+
+  await localAssetStorage.deleteObject({ filePath: file.filePath });
+  await deleteCloudAsset(owner, file.cloud);
+  db.delete(assets).where(and(eq(assets.id, assetId), eq(assets.ownerTokenId, owner.id))).run();
+  return true;
+}
+
+async function generateSingleOutput(
+  owner: DataOwner,
+  input: ImageProviderInput,
+  provider: ImageProvider,
+  signal?: AbortSignal
+): Promise<BatchOutputResult> {
   const outputId = randomUUID();
 
   try {
@@ -184,7 +231,7 @@ async function generateSingleOutput(input: ImageProviderInput, provider: ImagePr
       throw new ProviderError("unsupported_provider_behavior", "上游图像服务没有返回图像结果。", 502);
     }
 
-    const saved = await saveProviderImage(providerImage, input, signal);
+    const saved = await saveProviderImage(owner, providerImage, input, signal);
 
     return {
       id: outputId,
@@ -205,7 +252,12 @@ async function generateSingleOutput(input: ImageProviderInput, provider: ImagePr
   }
 }
 
-async function editSingleOutput(input: EditImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<BatchOutputResult> {
+async function editSingleOutput(
+  owner: DataOwner,
+  input: EditImageProviderInput,
+  provider: ImageProvider,
+  signal?: AbortSignal
+): Promise<BatchOutputResult> {
   const outputId = randomUUID();
 
   try {
@@ -224,7 +276,7 @@ async function editSingleOutput(input: EditImageProviderInput, provider: ImagePr
       throw new ProviderError("unsupported_provider_behavior", "上游图像服务没有返回图像结果。", 502);
     }
 
-    const saved = await saveProviderImage(providerImage, input, signal);
+    const saved = await saveProviderImage(owner, providerImage, input, signal);
 
     return {
       id: outputId,
@@ -245,7 +297,12 @@ async function editSingleOutput(input: EditImageProviderInput, provider: ImagePr
   }
 }
 
-async function saveProviderImage(image: ProviderImage, input: ImageProviderInput, _signal?: AbortSignal): Promise<SavedProviderImage> {
+async function saveProviderImage(
+  owner: DataOwner,
+  image: ProviderImage,
+  input: ImageProviderInput,
+  _signal?: AbortSignal
+): Promise<SavedProviderImage> {
   const assetId = randomUUID();
   const fileName = `${assetId}.${input.outputFormat === "jpeg" ? "jpg" : input.outputFormat}`;
   const relativePath = `assets/${fileName}`;
@@ -254,7 +311,7 @@ async function saveProviderImage(image: ProviderImage, input: ImageProviderInput
   const bytes = Buffer.from(image.b64Json, "base64");
 
   await localAssetStorage.putObject({ filePath, bytes });
-  const cloudStorage = await saveAssetToConfiguredCloud({
+  const cloudStorage = await saveAssetToConfiguredCloud(owner, {
     fileName,
     bytes,
     mimeType,
@@ -275,7 +332,7 @@ async function saveProviderImage(image: ProviderImage, input: ImageProviderInput
   };
 }
 
-function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOutputResult[]): GenerationRecord {
+function saveGenerationRecord(owner: DataOwner, input: PersistedGenerationInput, outputs: BatchOutputResult[]): GenerationRecord {
   const createdAt = new Date().toISOString();
   const generationId = randomUUID();
   const successCount = outputs.filter((output) => output.status === "succeeded").length;
@@ -286,6 +343,7 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
   db.insert(generationRecords)
     .values({
       id: generationId,
+      ownerTokenId: owner.id,
       mode: input.mode,
       prompt: input.originalPrompt,
       effectivePrompt: input.prompt,
@@ -307,6 +365,7 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
       db.insert(assets)
         .values({
           id: output.asset.id,
+          ownerTokenId: owner.id,
           fileName: output.asset.fileName,
           relativePath: `assets/${output.asset.fileName}`,
           mimeType: output.asset.mimeType,
@@ -329,6 +388,7 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
     db.insert(generationOutputs)
       .values({
         id: output.id,
+        ownerTokenId: owner.id,
         generationId,
         status: output.status,
         assetId: output.asset?.id ?? null,
@@ -375,13 +435,16 @@ function toGenerationOutput(output: BatchOutputResult): GenerationOutput {
   };
 }
 
-async function saveAssetToConfiguredCloud(input: {
-  fileName: string;
-  bytes: Buffer;
-  mimeType: string;
-  createdAt: string;
-}): Promise<AssetCloudStorageRecord | undefined> {
-  const config = getActiveCosStorageConfig();
+async function saveAssetToConfiguredCloud(
+  owner: DataOwner,
+  input: {
+    fileName: string;
+    bytes: Buffer;
+    mimeType: string;
+    createdAt: string;
+  }
+): Promise<AssetCloudStorageRecord | undefined> {
+  const config = getActiveCosStorageConfig(owner);
   if (!config) {
     return undefined;
   }
@@ -418,8 +481,8 @@ async function saveAssetToConfiguredCloud(input: {
   }
 }
 
-async function readCloudAsset(location: CosAssetLocation | undefined): Promise<Buffer | undefined> {
-  const config = getActiveCosStorageConfig();
+async function readCloudAsset(owner: DataOwner, location: CosAssetLocation | undefined): Promise<Buffer | undefined> {
+  const config = getActiveCosStorageConfig(owner);
   if (!location || !config) {
     return undefined;
   }
@@ -429,6 +492,15 @@ async function readCloudAsset(location: CosAssetLocation | undefined): Promise<B
   } catch {
     return undefined;
   }
+}
+
+async function deleteCloudAsset(owner: DataOwner, location: CosAssetLocation | undefined): Promise<void> {
+  const config = getActiveCosStorageConfig(owner);
+  if (!location || !config) {
+    return;
+  }
+
+  await new CosAssetStorageAdapter(config).deleteObject(location).catch(() => undefined);
 }
 
 function toCosAssetLocation(asset: typeof assets.$inferSelect): CosAssetLocation | undefined {

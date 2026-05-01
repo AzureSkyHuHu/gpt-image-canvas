@@ -45,6 +45,8 @@ Set `OPENAI_API_KEY` in `.env` before live generation. The app uses the official
 
 Open the web app at `http://localhost:5173`.
 
+For API calls and token management, see [API docs](docs/api.md).
+
 ## Upgrading To v0.1.0
 
 Back up local runtime data before upgrading:

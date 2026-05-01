@@ -1,6 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { SaveStorageConfigRequest, StorageConfigResponse, StorageTestResult } from "./contracts.js";
 import { db } from "./database.js";
+import type { DataOwner } from "./data-owner.js";
 import { CosAssetStorageAdapter, normalizeKeyPrefix, type CosStorageAdapterConfig, storageErrorMessage } from "./asset-storage.js";
 import { storageConfigs } from "./schema.js";
 
@@ -11,12 +12,12 @@ const DEFAULT_COS_KEY_PREFIX = process.env.COS_DEFAULT_KEY_PREFIX?.trim() || "gp
 
 type StorageConfigRow = typeof storageConfigs.$inferSelect;
 
-export function getStorageConfig(): StorageConfigResponse {
-  return toStorageConfigResponse(getStorageConfigRow());
+export function getStorageConfig(owner: DataOwner): StorageConfigResponse {
+  return toStorageConfigResponse(getStorageConfigRow(owner));
 }
 
-export function getActiveCosStorageConfig(): CosStorageAdapterConfig | undefined {
-  const row = getStorageConfigRow();
+export function getActiveCosStorageConfig(owner: DataOwner): CosStorageAdapterConfig | undefined {
+  const row = getStorageConfigRow(owner);
   if (!row || row.enabled !== 1 || row.provider !== "cos" || !row.secretId || !row.secretKey || !row.bucket || !row.region) {
     return undefined;
   }
@@ -30,13 +31,14 @@ export function getActiveCosStorageConfig(): CosStorageAdapterConfig | undefined
   };
 }
 
-export async function saveStorageConfig(input: SaveStorageConfigRequest): Promise<StorageConfigResponse> {
+export async function saveStorageConfig(owner: DataOwner, input: SaveStorageConfigRequest): Promise<StorageConfigResponse> {
   const now = new Date().toISOString();
-  const existing = getStorageConfigRow();
+  const existing = getStorageConfigRow(owner);
 
   if (!input.enabled) {
     upsertStorageConfig({
-      id: ACTIVE_STORAGE_CONFIG_ID,
+      id: storageConfigIdForOwner(owner),
+      ownerTokenId: owner.id,
       provider: "cos",
       enabled: 0,
       secretId: existing?.secretId ?? null,
@@ -47,14 +49,15 @@ export async function saveStorageConfig(input: SaveStorageConfigRequest): Promis
       createdAt: existing?.createdAt ?? now,
       updatedAt: now
     });
-    return getStorageConfig();
+    return getStorageConfig(owner);
   }
 
   const parsed = resolveCosConfigForSave(input, existing);
   await new CosAssetStorageAdapter(parsed).testConfig();
 
   upsertStorageConfig({
-    id: ACTIVE_STORAGE_CONFIG_ID,
+    id: storageConfigIdForOwner(owner),
+    ownerTokenId: owner.id,
     provider: "cos",
     enabled: 1,
     secretId: parsed.secretId,
@@ -66,12 +69,12 @@ export async function saveStorageConfig(input: SaveStorageConfigRequest): Promis
     updatedAt: now
   });
 
-  return getStorageConfig();
+  return getStorageConfig(owner);
 }
 
-export async function testStorageConfig(input: SaveStorageConfigRequest): Promise<StorageTestResult> {
+export async function testStorageConfig(owner: DataOwner, input: SaveStorageConfigRequest): Promise<StorageTestResult> {
   try {
-    const parsed = resolveCosConfigForSave(input, getStorageConfigRow());
+    const parsed = resolveCosConfigForSave(input, getStorageConfigRow(owner));
     await new CosAssetStorageAdapter(parsed).testConfig();
     return {
       ok: true,
@@ -85,8 +88,12 @@ export async function testStorageConfig(input: SaveStorageConfigRequest): Promis
   }
 }
 
-function getStorageConfigRow(): StorageConfigRow | undefined {
-  return db.select().from(storageConfigs).where(eq(storageConfigs.id, ACTIVE_STORAGE_CONFIG_ID)).get();
+function getStorageConfigRow(owner: DataOwner): StorageConfigRow | undefined {
+  return db
+    .select()
+    .from(storageConfigs)
+    .where(and(eq(storageConfigs.id, storageConfigIdForOwner(owner)), eq(storageConfigs.ownerTokenId, owner.id)))
+    .get();
 }
 
 function upsertStorageConfig(row: StorageConfigRow): void {
@@ -95,6 +102,7 @@ function upsertStorageConfig(row: StorageConfigRow): void {
     .onConflictDoUpdate({
       target: storageConfigs.id,
       set: {
+        ownerTokenId: row.ownerTokenId,
         provider: row.provider,
         enabled: row.enabled,
         secretId: row.secretId,
@@ -106,6 +114,10 @@ function upsertStorageConfig(row: StorageConfigRow): void {
       }
     })
     .run();
+}
+
+function storageConfigIdForOwner(owner: DataOwner): string {
+  return owner.isLocal ? ACTIVE_STORAGE_CONFIG_ID : `${ACTIVE_STORAGE_CONFIG_ID}:${owner.id}`;
 }
 
 function resolveCosConfigForSave(input: SaveStorageConfigRequest, existing: StorageConfigRow | undefined): CosStorageAdapterConfig {

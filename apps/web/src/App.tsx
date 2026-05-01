@@ -11,6 +11,7 @@ import {
   RotateCcw,
   Sparkles,
   Square,
+  Trash2,
   X,
   XCircle
 } from "lucide-react";
@@ -180,6 +181,11 @@ interface GenerationPlaceholderPlacement {
 interface ActiveGenerationPlaceholders {
   requestId: number;
   placements: GenerationPlaceholderPlacement[];
+}
+
+interface CanvasGenerationCleanup {
+  assetIds: Set<string>;
+  generationId?: string;
 }
 
 interface ActiveGenerationTask {
@@ -600,7 +606,8 @@ function createImageAsset(asset: GeneratedAsset): TLAsset {
 function createImageShape(
   asset: GeneratedAsset,
   placement: GenerationPlaceholderPlacement,
-  promptValue: string
+  promptValue: string,
+  generationId?: string
 ): Partial<TLImageShape> & { id: TLShapeId; type: "image" } {
   const assetId = createTldrawAssetId(asset.id);
 
@@ -619,6 +626,9 @@ function createImageShape(
       flipX: false,
       flipY: false,
       altText: promptValue
+    },
+    meta: {
+      generationId
     }
   };
 }
@@ -634,7 +644,7 @@ function replaceGenerationPlaceholders(editor: Editor, placeholderSet: ActiveGen
     if (output?.status === "succeeded" && output.asset) {
       const resolvedPlacement = livePlacement(editor, placement);
       assets.push(createImageAsset(output.asset));
-      imageShapes.push(createImageShape(output.asset, resolvedPlacement, record.prompt));
+      imageShapes.push(createImageShape(output.asset, resolvedPlacement, record.prompt, record.id));
       if (isGenerationPlaceholderShape(editor.getShape(placement.id))) {
         replacedPlaceholderIds.push(placement.id);
       }
@@ -677,6 +687,76 @@ function replaceGenerationPlaceholders(editor: Editor, placeholderSet: ActiveGen
 
 function generatedAssetsForRecord(record: GenerationRecord): GeneratedAsset[] {
   return record.outputs.flatMap((output) => (output.status === "succeeded" && output.asset ? [output.asset] : []));
+}
+
+function canvasGenerationCleanupForRecord(record: GenerationRecord): CanvasGenerationCleanup {
+  return {
+    assetIds: new Set(generatedAssetsForRecord(record).map((asset) => asset.id)),
+    generationId: record.id.startsWith("local-generation-") ? undefined : record.id
+  };
+}
+
+function isGeneratedCanvasImageShape(editor: Editor, shape: unknown, cleanup: CanvasGenerationCleanup): shape is TLImageShape {
+  if (!isRecord(shape) || shape.type !== "image") {
+    return false;
+  }
+
+  const imageShape = shape as unknown as TLImageShape;
+  const shapeGenerationId =
+    isRecord(imageShape.meta) && typeof imageShape.meta.generationId === "string" ? imageShape.meta.generationId : undefined;
+  if (cleanup.generationId && shapeGenerationId === cleanup.generationId) {
+    return true;
+  }
+
+  const asset = imageShape.props.assetId ? editor.getAsset(imageShape.props.assetId) : undefined;
+  const sourceUrl = getImageSourceUrl(imageShape, asset);
+  const localAssetId = getLocalAssetId(asset, sourceUrl);
+  return Boolean(localAssetId && cleanup.assetIds.has(localAssetId));
+}
+
+function removeGenerationImagesFromCanvas(editor: Editor, record: GenerationRecord): number {
+  const cleanup = canvasGenerationCleanupForRecord(record);
+  if (cleanup.assetIds.size === 0 && !cleanup.generationId) {
+    return 0;
+  }
+
+  const shapeIds: TLShapeId[] = [];
+  const assetIds = new Set<TLAssetId>();
+
+  for (const shape of editor.getCurrentPageShapes()) {
+    if (!isGeneratedCanvasImageShape(editor, shape, cleanup)) {
+      continue;
+    }
+
+    shapeIds.push(shape.id);
+    if (shape.props.assetId) {
+      assetIds.add(shape.props.assetId);
+    }
+  }
+
+  if (shapeIds.length === 0) {
+    return 0;
+  }
+
+  editor.run(() => {
+    editor.deleteShapes(shapeIds);
+    const remainingAssetIds = new Set<TLAssetId>();
+    for (const shape of editor.getCurrentPageShapes()) {
+      if (shape.type === "image") {
+        const assetId = (shape as TLImageShape).props.assetId;
+        if (assetId) {
+          remainingAssetIds.add(assetId);
+        }
+      }
+    }
+
+    const orphanAssetIds = Array.from(assetIds).filter((assetId) => !remainingAssetIds.has(assetId));
+    if (orphanAssetIds.length > 0) {
+      editor.deleteAssets(orphanAssetIds);
+    }
+  });
+
+  return shapeIds.length;
 }
 
 async function preloadGenerationRecordPreviews(record: GenerationRecord, signal: AbortSignal): Promise<void> {
@@ -939,25 +1019,14 @@ function previewWidthForAssetContext(asset: Extract<TLAsset, { type: "image" }>,
 }
 
 function findCanvasImageShape(editor: Editor, record: GenerationRecord): TLShapeId | undefined {
-  const assetIds = new Set(
-    record.outputs.flatMap((output) => (output.status === "succeeded" && output.asset ? [output.asset.id] : []))
-  );
-  if (assetIds.size === 0) {
+  const cleanup = canvasGenerationCleanupForRecord(record);
+  if (cleanup.assetIds.size === 0 && !cleanup.generationId) {
     return undefined;
   }
 
   for (const shape of editor.getCurrentPageShapes()) {
-    if (shape.type !== "image") {
-      continue;
-    }
-
-    const imageShape = shape as TLImageShape;
-    const asset = imageShape.props.assetId ? editor.getAsset(imageShape.props.assetId) : undefined;
-    const sourceUrl = getImageSourceUrl(imageShape, asset);
-    const localAssetId = getLocalAssetId(asset, sourceUrl);
-
-    if (localAssetId && assetIds.has(localAssetId)) {
-      return imageShape.id;
+    if (isGeneratedCanvasImageShape(editor, shape, cleanup)) {
+      return shape.id;
     }
   }
 
@@ -1163,6 +1232,61 @@ function BrandName() {
   );
 }
 
+function DeleteHistoryDialog({
+  deleting,
+  record,
+  onCancel,
+  onConfirm
+}: {
+  deleting: boolean;
+  record: GenerationRecord;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const outputCount = successfulOutputCount(record);
+  const promptText = promptExcerpt(record.prompt) || "无提示词";
+
+  return (
+    <div className="app-confirm-backdrop" data-testid="history-delete-dialog" role="presentation">
+      <div
+        aria-describedby="history-delete-description"
+        aria-labelledby="history-delete-title"
+        aria-modal="true"
+        className="app-confirm"
+        role="dialog"
+      >
+        <div className="app-confirm__icon">
+          <AlertTriangle className="size-5" aria-hidden="true" />
+        </div>
+        <div className="app-confirm__copy">
+          <h2 id="history-delete-title">彻底删除这条生成历史？</h2>
+          <p id="history-delete-description">
+            将删除“{promptText}”，并移除画布上的本次生成图片，同时删除本地图片文件和预览缓存。
+          </p>
+          <p className="app-confirm__hint">
+            关联到其它历史的图片资源会保留；这条记录内的失败占位也会从历史里清掉。
+          </p>
+        </div>
+        <div className="app-confirm__summary" aria-label="删除范围">
+          <span>历史记录</span>
+          <span>{outputCount} 张成功图片</span>
+          <span>画布图片</span>
+          <span>本地文件</span>
+        </div>
+        <div className="app-confirm__actions">
+          <button className="secondary-action h-10" disabled={deleting} type="button" onClick={onCancel}>
+            取消
+          </button>
+          <button className="danger-action h-10" disabled={deleting} type="button" onClick={onConfirm}>
+            {deleting ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Trash2 className="size-4" aria-hidden="true" />}
+            确认删除
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TopNavigation({
   route,
   onNavigate,
@@ -1256,6 +1380,8 @@ export function App() {
   const [generationWarning, setGenerationWarning] = useState("");
   const [generationHistory, setGenerationHistory] = useState<GenerationRecord[]>([]);
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
+  const [pendingDeleteHistoryRecord, setPendingDeleteHistoryRecord] = useState<GenerationRecord | null>(null);
+  const [deletingHistoryRecordId, setDeletingHistoryRecordId] = useState<string | null>(null);
   const [isMobileDrawer, setIsMobileDrawer] = useState(false);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [isStorageDialogOpen, setIsStorageDialogOpen] = useState(false);
@@ -1276,6 +1402,38 @@ export function App() {
   const saveTimerRef = useRef<number | undefined>();
   const saveRequestRef = useRef(0);
   const isGenerating = activeGenerationCount > 0;
+
+  const saveProjectSnapshotNow = useCallback(async (editor: Editor): Promise<void> => {
+    const requestId = saveRequestRef.current + 1;
+    saveRequestRef.current = requestId;
+    setSaveStatus("saving");
+    setSaveError("");
+
+    try {
+      const response = await fetch("/api/project", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          snapshot: filterLoadingPlaceholdersFromSnapshot(editor.getSnapshot())
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Project save failed with ${response.status}`);
+      }
+
+      if (saveRequestRef.current === requestId) {
+        setSaveStatus("saved");
+      }
+    } catch {
+      if (saveRequestRef.current === requestId) {
+        setSaveStatus("error");
+        setSaveError("自动保存失败，当前画布已保留，请稍后继续编辑。");
+      }
+    }
+  }, []);
 
   const trimmedPrompt = prompt.trim();
   const promptValidationMessage = prompt.trim() ? "" : "请输入提示词。";
@@ -1646,45 +1804,13 @@ export function App() {
       });
     };
 
-    async function saveProject(): Promise<void> {
-      const requestId = saveRequestRef.current + 1;
-      saveRequestRef.current = requestId;
-      setSaveStatus("saving");
-      setSaveError("");
-
-      try {
-        const response = await fetch("/api/project", {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            snapshot: filterLoadingPlaceholdersFromSnapshot(editor.getSnapshot())
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error(`Project save failed with ${response.status}`);
-        }
-
-        if (saveRequestRef.current === requestId) {
-          setSaveStatus("saved");
-        }
-      } catch {
-        if (saveRequestRef.current === requestId) {
-          setSaveStatus("error");
-          setSaveError("自动保存失败，当前画布已保留，请稍后继续编辑。");
-        }
-      }
-    }
-
     const removeListener = editor.store.listen(
       () => {
         window.clearTimeout(saveTimerRef.current);
         setSaveStatus((status) => (status === "pending" ? status : "pending"));
         setSaveError((error) => (error ? "" : error));
         saveTimerRef.current = window.setTimeout(() => {
-          void saveProject();
+          void saveProjectSnapshotNow(editor);
         }, AUTOSAVE_DEBOUNCE_MS);
       },
       {
@@ -1711,7 +1837,7 @@ export function App() {
       removeReferenceStoreListener();
       removeListener();
     };
-  }, []);
+  }, [saveProjectSnapshotNow]);
 
   function selectScenePreset(nextPresetId: string): void {
     if (nextPresetId === CUSTOM_SIZE_PRESET_ID) {
@@ -2057,6 +2183,66 @@ export function App() {
         ];
       })
     );
+  }
+
+  function requestDeleteHistoryRecord(record: GenerationRecord): void {
+    if (record.status === "running") {
+      setGenerationWarning("运行中的生成任务请先取消。");
+      return;
+    }
+
+    setPendingDeleteHistoryRecord(record);
+  }
+
+  async function deleteHistoryRecord(record: GenerationRecord): Promise<void> {
+    setGenerationError("");
+    setGenerationMessage("");
+    setGenerationWarning("");
+    setDeletingHistoryRecordId(record.id);
+
+    if (record.id.startsWith("local-generation-")) {
+      try {
+        const editor = editorRef.current;
+        const removedCount = editor ? removeGenerationImagesFromCanvas(editor, record) : 0;
+        if (removedCount > 0 && editor) {
+          window.clearTimeout(saveTimerRef.current);
+          await saveProjectSnapshotNow(editor);
+        }
+        setGenerationHistory((history) => history.filter((item) => item.id !== record.id));
+        setPendingDeleteHistoryRecord(null);
+        setGenerationMessage(removedCount > 0 ? `已删除本地生成历史，并从画布移除 ${removedCount} 张图片。` : "已删除本地生成历史。");
+      } finally {
+        setDeletingHistoryRecordId(null);
+      }
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/generations/${encodeURIComponent(record.id)}`, {
+        method: "DELETE"
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const editor = editorRef.current;
+      const removedCount = editor ? removeGenerationImagesFromCanvas(editor, record) : 0;
+      if (removedCount > 0 && editor) {
+        window.clearTimeout(saveTimerRef.current);
+        await saveProjectSnapshotNow(editor);
+      }
+      setGenerationHistory((history) => history.filter((item) => item.id !== record.id));
+      setPendingDeleteHistoryRecord(null);
+      setGenerationMessage(
+        removedCount > 0
+          ? `已删除生成历史、图片文件，并从画布移除 ${removedCount} 张图片。`
+          : "已删除生成历史和图片文件。"
+      );
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : "删除生成历史失败。");
+    } finally {
+      setDeletingHistoryRecordId((currentId) => (currentId === record.id ? null : currentId));
+    }
   }
 
   async function copyHistoryPrompt(record: GenerationRecord): Promise<void> {
@@ -2631,6 +2817,17 @@ export function App() {
                             <Download className="size-4" aria-hidden="true" />
                           </button>
                         )}
+                        <button
+                          aria-label={`删除历史记录：${excerpt}`}
+                          className="history-icon-action history-icon-action--danger"
+                          type="button"
+                          data-testid="history-delete"
+                          disabled={isRecordRunning}
+                          title={isRecordRunning ? "任务运行中" : "删除历史"}
+                          onClick={() => requestDeleteHistoryRecord(record)}
+                        >
+                          <Trash2 className="size-4" aria-hidden="true" />
+                        </button>
                       </div>
                     </article>
                   );
@@ -2801,6 +2998,14 @@ export function App() {
             </div>
           </div>
         </div>
+      ) : null}
+      {pendingDeleteHistoryRecord ? (
+        <DeleteHistoryDialog
+          deleting={deletingHistoryRecordId === pendingDeleteHistoryRecord.id}
+          record={pendingDeleteHistoryRecord}
+          onCancel={() => setPendingDeleteHistoryRecord(null)}
+          onConfirm={() => void deleteHistoryRecord(pendingDeleteHistoryRecord)}
+        />
       ) : null}
       </main>
       {route === "gallery" ? (

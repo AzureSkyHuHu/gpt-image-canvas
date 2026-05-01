@@ -1,6 +1,7 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import sharp from "sharp";
+import type { DataOwner } from "./data-owner.js";
 import { readStoredAsset } from "./image-generation.js";
 import { runtimePaths } from "./runtime.js";
 
@@ -56,13 +57,17 @@ export function parsePreviewWidth(value: string | undefined): PreviewWidthResult
   };
 }
 
-export async function readStoredAssetPreview(assetId: string, width: number): Promise<StoredAssetPreview | undefined> {
-  const asset = await readStoredAsset(assetId);
+export async function readStoredAssetPreview(
+  owner: DataOwner,
+  assetId: string,
+  width: number
+): Promise<StoredAssetPreview | undefined> {
+  const asset = await readStoredAsset(owner, assetId);
   if (!asset) {
     return undefined;
   }
 
-  const previewPath = resolvePreviewPath(asset.file.id, width);
+  const previewPath = resolvePreviewPath(owner, asset.file.id, width);
   const cached = await readCachedPreview(previewPath);
   if (cached) {
     return {
@@ -91,6 +96,12 @@ export async function readStoredAssetPreview(assetId: string, width: number): Pr
   };
 }
 
+export async function deleteStoredAssetPreviews(owner: DataOwner, assetId: string): Promise<void> {
+  await Promise.all(
+    PREVIEW_WIDTHS.map((width) => rm(resolvePreviewPath(owner, assetId, width), { force: true }).catch(() => undefined))
+  );
+}
+
 async function readCachedPreview(filePath: string): Promise<Buffer | undefined> {
   try {
     return await readFile(filePath);
@@ -99,8 +110,8 @@ async function readCachedPreview(filePath: string): Promise<Buffer | undefined> 
   }
 }
 
-function resolvePreviewPath(assetId: string, width: number): string {
-  const filePath = resolve(runtimePaths.assetPreviewsDir, `${safeFileSegment(assetId)}-${width}.webp`);
+function resolvePreviewPath(owner: DataOwner, assetId: string, width: number): string {
+  const filePath = resolve(runtimePaths.assetPreviewsDir, `${safeFileSegment(owner.id)}-${safeFileSegment(assetId)}-${width}.webp`);
   if (!isInsideDirectory(filePath, runtimePaths.assetPreviewsDir)) {
     throw new Error("Invalid preview cache path.");
   }

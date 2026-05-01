@@ -13,6 +13,7 @@ interface GenerationPlaceholderProps {
   error: string;
   requestId: string;
   outputIndex: number;
+  generationId?: string;
 }
 
 declare module "@tldraw/tlschema" {
@@ -38,7 +39,8 @@ export class GenerationPlaceholderShapeUtil extends BaseBoxShapeUtil<GenerationP
     status: T.literalEnum("loading", "failed"),
     error: T.string,
     requestId: T.string,
-    outputIndex: T.number
+    outputIndex: T.number,
+    generationId: T.string.optional()
   };
 
   override canBind(): boolean {
@@ -62,7 +64,8 @@ export class GenerationPlaceholderShapeUtil extends BaseBoxShapeUtil<GenerationP
       status: "loading",
       error: "",
       requestId: "",
-      outputIndex: 0
+      outputIndex: 0,
+      generationId: ""
     };
   }
 

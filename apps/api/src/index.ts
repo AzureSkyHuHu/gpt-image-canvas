@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import {
   adminMe,
+  assertAuthConfigSafe,
   authConfigWarnings,
   authMe,
   authMiddleware,
@@ -25,7 +26,7 @@ import {
   listAccessTokens,
   updateAccessToken
 } from "./access-token-store.js";
-import { parsePreviewWidth, readStoredAssetPreview } from "./asset-preview.js";
+import { deleteStoredAssetPreviews, parsePreviewWidth, readStoredAssetPreview } from "./asset-preview.js";
 import {
   GENERATION_COUNTS,
   IMAGE_QUALITIES,
@@ -46,6 +47,7 @@ import {
   type StylePresetId
 } from "./contracts.js";
 import { closeDatabase } from "./database.js";
+import { currentDataOwner } from "./data-owner.js";
 import {
   ProviderError,
   createOpenAIImageProvider,
@@ -55,8 +57,16 @@ import {
   type EditImageProviderInput,
   type ImageProviderInput
 } from "./image-provider.js";
-import { getStoredAssetFile, readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "./image-generation.js";
-import { deleteGalleryOutput, getGalleryImages, getProjectState, saveProjectSnapshot } from "./project-store.js";
+import { deleteStoredAsset, getStoredAssetFile, readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "./image-generation.js";
+import {
+  deleteGalleryOutput,
+  deleteGenerationRecord,
+  getGenerationRecordAssetIds,
+  getGalleryImages,
+  getGalleryOutputAssetId,
+  getProjectState,
+  saveProjectSnapshot
+} from "./project-store.js";
 import { accessControlConfig, runtimePaths, serverConfig } from "./runtime.js";
 import { getStorageConfig, saveStorageConfig, testStorageConfig } from "./storage-config.js";
 
@@ -77,6 +87,8 @@ export const app = new Hono<AppEnv>();
 for (const warning of authConfigWarnings()) {
   console.warn(warning);
 }
+
+assertAuthConfigSafe();
 
 ensureBootstrapAccessToken({
   accessToken: accessControlConfig.bootstrapAccessToken,
@@ -108,6 +120,24 @@ app.get("/api/health", (c) =>
 );
 
 app.get("/api/auth/me", (c) => c.json(authMe(c)));
+
+app.get("/api/auth/login", (c) => {
+  const token = c.req.query("token")?.trim();
+  const redirectTo = safeRedirectPath(c.req.query("redirect")) ?? "/";
+  if (!token) {
+    return c.redirect(`${redirectTo}${redirectTo.includes("?") ? "&" : "?"}auth_error=missing_token`, 302);
+  }
+
+  try {
+    const result = loginWithAccessToken(c, token);
+    if (!result) {
+      return c.redirect(`${redirectTo}${redirectTo.includes("?") ? "&" : "?"}auth_error=invalid_token`, 302);
+    }
+    return c.redirect(redirectTo, 302);
+  } catch {
+    return c.redirect(`${redirectTo}${redirectTo.includes("?") ? "&" : "?"}auth_error=invalid_token`, 302);
+  }
+});
 
 app.post("/api/auth/login", async (c) => {
   const payload = await readJson(c.req.raw);
@@ -230,14 +260,22 @@ app.get("/api/config", (c) => {
   return c.json(config);
 });
 
-app.get("/api/project", (c) => c.json(getProjectState()));
+app.get("/api/project", (c) => c.json(getProjectState(currentDataOwner(c))));
 
-app.get("/api/gallery", (c) => c.json(getGalleryImages()));
+app.get("/api/gallery", (c) => c.json(getGalleryImages(currentDataOwner(c))));
 
-app.delete("/api/gallery/:outputId", (c) => {
-  const deleted = deleteGalleryOutput(c.req.param("outputId"));
+app.delete("/api/gallery/:outputId", async (c) => {
+  const owner = currentDataOwner(c);
+  const outputId = c.req.param("outputId");
+  const deleteAsset = parseBooleanQuery(c.req.query("deleteAsset"));
+  const assetId = deleteAsset ? getGalleryOutputAssetId(owner, outputId) : undefined;
+  const deleted = deleteGalleryOutput(owner, outputId);
   if (!deleted) {
     return c.json(errorResponse("not_found", "找不到请求的 Gallery 图片记录。"), 404);
+  }
+
+  if (deleteAsset && assetId) {
+    await Promise.all([deleteStoredAsset(owner, assetId), deleteStoredAssetPreviews(owner, assetId)]);
   }
 
   return c.json({
@@ -245,7 +283,7 @@ app.delete("/api/gallery/:outputId", (c) => {
   });
 });
 
-app.get("/api/storage/config", (c) => c.json(getStorageConfig()));
+app.get("/api/storage/config", (c) => c.json(getStorageConfig(currentDataOwner(c))));
 
 app.put("/api/storage/config", async (c) => {
   const payload = await readJson(c.req.raw);
@@ -259,7 +297,7 @@ app.put("/api/storage/config", async (c) => {
   }
 
   try {
-    return c.json(await saveStorageConfig(parsed.value));
+    return c.json(await saveStorageConfig(currentDataOwner(c), parsed.value));
   } catch (error) {
     return c.json(errorResponse("storage_config_error", errorToMessage(error)), 400);
   }
@@ -276,7 +314,25 @@ app.post("/api/storage/config/test", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  return c.json(await testStorageConfig(parsed.value));
+  return c.json(await testStorageConfig(currentDataOwner(c), parsed.value));
+});
+
+app.delete("/api/generations/:generationId", async (c) => {
+  const owner = currentDataOwner(c);
+  const generationId = c.req.param("generationId");
+  const assetIds = getGenerationRecordAssetIds(owner, generationId);
+  const deleted = deleteGenerationRecord(owner, generationId);
+  if (!deleted) {
+    return c.json(errorResponse("not_found", "找不到请求的生成历史记录。"), 404);
+  }
+
+  await Promise.all(
+    assetIds.map((assetId) => Promise.all([deleteStoredAsset(owner, assetId), deleteStoredAssetPreviews(owner, assetId)]))
+  );
+
+  return c.json({
+    ok: true
+  });
 });
 
 app.get("/api/assets/:id/preview", async (c) => {
@@ -285,7 +341,7 @@ app.get("/api/assets/:id/preview", async (c) => {
     return c.json(errorResponse(parsedWidth.code, parsedWidth.message), 400);
   }
 
-  const preview = await readStoredAssetPreview(c.req.param("id"), parsedWidth.width);
+  const preview = await readStoredAssetPreview(currentDataOwner(c), c.req.param("id"), parsedWidth.width);
   if (!preview) {
     return c.json(errorResponse("not_found", "Asset not found."), 404);
   }
@@ -301,7 +357,7 @@ app.get("/api/assets/:id/preview", async (c) => {
 });
 
 app.get("/api/assets/:id/download", async (c) => {
-  const asset = await readStoredAsset(c.req.param("id"));
+  const asset = await readStoredAsset(currentDataOwner(c), c.req.param("id"));
   if (!asset) {
     return c.json(errorResponse("not_found", "找不到请求的图像资源。"), 404);
   }
@@ -317,7 +373,7 @@ app.get("/api/assets/:id/download", async (c) => {
 });
 
 app.get("/api/assets/:id", async (c) => {
-  const asset = await readStoredAsset(c.req.param("id"));
+  const asset = await readStoredAsset(currentDataOwner(c), c.req.param("id"));
   if (!asset) {
     return c.json(errorResponse("not_found", "找不到请求的图像资源。"), 404);
   }
@@ -345,7 +401,7 @@ app.put("/api/project", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  return c.json(saveProjectSnapshot(parsed.value));
+  return c.json(saveProjectSnapshot(currentDataOwner(c), parsed.value));
 });
 
 app.post("/api/images/generate", async (c) => {
@@ -366,7 +422,7 @@ app.post("/api/images/generate", async (c) => {
 
   try {
     const provider = createOpenAIImageProvider(providerConfig.config);
-    return c.json(await runTextToImageGeneration(parsed.value, provider, c.req.raw.signal));
+    return c.json(await runTextToImageGeneration(currentDataOwner(c), parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {
       return providerErrorJson(c, error);
@@ -382,7 +438,7 @@ app.post("/api/images/edit", async (c) => {
     return c.json(payload.error, 400);
   }
 
-  const parsed = parseEditPayload(payload.value);
+  const parsed = parseEditPayload(currentDataOwner(c), payload.value);
   if (!parsed.ok) {
     return c.json(parsed.error, 400);
   }
@@ -394,7 +450,7 @@ app.post("/api/images/edit", async (c) => {
 
   try {
     const provider = createOpenAIImageProvider(providerConfig.config);
-    return c.json(await runReferenceImageGeneration(parsed.value, provider, c.req.raw.signal));
+    return c.json(await runReferenceImageGeneration(currentDataOwner(c), parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {
       return providerErrorJson(c, error);
@@ -431,6 +487,19 @@ function errorResponse(code: string, message: string): ErrorResponseBody {
 
 function downloadFileName(fileName: string): string {
   return fileName.replace(/[^a-zA-Z0-9._-]/gu, "_");
+}
+
+function safeRedirectPath(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//") || /[\r\n]/u.test(trimmed)) {
+    return undefined;
+  }
+
+  return trimmed;
 }
 
 interface ErrorResponseBody {
@@ -538,7 +607,7 @@ function parseGeneratePayload(input: unknown): ParseResult<ImageProviderInput> {
   };
 }
 
-function parseEditPayload(input: unknown): ParseResult<EditImageProviderInput> {
+function parseEditPayload(owner: ReturnType<typeof currentDataOwner>, input: unknown): ParseResult<EditImageProviderInput> {
   const base = parseBaseImagePayload(input);
   if (!base.ok) {
     return base;
@@ -562,7 +631,7 @@ function parseEditPayload(input: unknown): ParseResult<EditImageProviderInput> {
   const fileName = input.referenceImage.fileName;
   const referenceAssetId = parseOptionalString(input.referenceAssetId);
 
-  if (referenceAssetId && !getStoredAssetFile(referenceAssetId)) {
+  if (referenceAssetId && !getStoredAssetFile(owner, referenceAssetId)) {
     return {
       ok: false,
       error: errorResponse("invalid_request", "找不到可记录的本地参考图像资源。")
@@ -863,6 +932,11 @@ function parseDimension(value: unknown): number {
 
 function parseOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function parseBooleanQuery(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
 function stringValue(value: unknown): string | undefined {

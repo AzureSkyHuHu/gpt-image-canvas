@@ -386,10 +386,43 @@ body {
 
 .auth-session-bar {
   position: fixed;
-  right: 1rem;
+  left: 1rem;
   bottom: 1rem;
   z-index: 4000;
+  pointer-events: none;
+}
+
+.auth-session-bar button {
+  pointer-events: auto;
+}
+
+.auth-session-bar__toggle {
+  width: 2.45rem;
+  min-width: 2.45rem;
+  padding: 0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.auth-session-bar__toggle:active {
+  cursor: grabbing;
+}
+
+.auth-session-bar__toggle svg:last-child {
+  margin-left: -0.35rem;
+  transition: transform 150ms ease;
+}
+
+.auth-session-bar[data-expanded="true"] .auth-session-bar__toggle svg:last-child {
+  transform: rotate(180deg);
+}
+
+.auth-session-bar__menu {
+  position: absolute;
+  left: 0;
   display: inline-flex;
+  max-width: min(22rem, calc(100vw - 2rem));
   align-items: center;
   gap: 0.6rem;
   border: 1px solid var(--line);
@@ -400,10 +433,45 @@ body {
   font-size: 0.82rem;
   font-weight: 800;
   padding: 0.45rem;
+  pointer-events: auto;
 }
 
-.auth-session-bar span {
+.auth-session-bar[data-menu-placement="above"] .auth-session-bar__menu {
+  bottom: calc(100% + 0.45rem);
+}
+
+.auth-session-bar[data-menu-placement="below"] .auth-session-bar__menu {
+  top: calc(100% + 0.45rem);
+}
+
+.auth-session-bar[data-menu-align="end"] .auth-session-bar__menu {
+  right: 0;
+  left: auto;
+}
+
+.auth-session-bar__menu span {
+  min-width: 0;
   padding-left: 0.45rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+  .auth-session-bar {
+    left: 0.75rem;
+    bottom: 0.75rem;
+  }
+
+  .auth-session-bar__menu {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .auth-session-bar__menu span {
+    width: 100%;
+    padding: 0 0.2rem;
+  }
 }
 
 @media (max-width: 960px) {
@@ -2033,6 +2101,15 @@ a:focus-visible {
   background: #f9f1e5;
 }
 
+.history-icon-action--danger {
+  color: var(--danger);
+}
+
+.history-icon-action--danger:hover {
+  border-color: rgb(180 35 24 / 0.22);
+  background: #fff1ed;
+}
+
 .primary-action,
 .secondary-action,
 .danger-action {
@@ -2509,7 +2586,8 @@ a:focus-visible {
 }
 
 .gallery-modal-backdrop,
-.gallery-confirm-backdrop {
+.gallery-confirm-backdrop,
+.app-confirm-backdrop {
   position: fixed;
   inset: var(--app-nav-height) 0 0;
   z-index: 3100;
@@ -2522,7 +2600,8 @@ a:focus-visible {
   padding: 1rem;
 }
 
-.gallery-confirm-backdrop {
+.gallery-confirm-backdrop,
+.app-confirm-backdrop {
   z-index: 3200;
 }
 
@@ -2576,7 +2655,8 @@ a:focus-visible {
   background: #fffaf1;
 }
 
-.gallery-confirm {
+.gallery-confirm,
+.app-confirm {
   display: grid;
   width: min(30rem, 100%);
   grid-template-columns: auto minmax(0, 1fr);
@@ -2588,7 +2668,8 @@ a:focus-visible {
   padding: 1rem;
 }
 
-.gallery-confirm__icon {
+.gallery-confirm__icon,
+.app-confirm__icon {
   display: inline-flex;
   width: 2.6rem;
   height: 2.6rem;
@@ -2599,18 +2680,21 @@ a:focus-visible {
   color: var(--danger);
 }
 
-.gallery-confirm__copy {
+.gallery-confirm__copy,
+.app-confirm__copy {
   min-width: 0;
 }
 
-.gallery-confirm__copy h2 {
+.gallery-confirm__copy h2,
+.app-confirm__copy h2 {
   color: var(--ink);
   font-size: 1.05rem;
   font-weight: 900;
   line-height: 1.25;
 }
 
-.gallery-confirm__copy p {
+.gallery-confirm__copy p,
+.app-confirm__copy p {
   margin-top: 0.35rem;
   color: var(--muted-ink);
   font-size: 0.88rem;
@@ -2618,7 +2702,50 @@ a:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.gallery-confirm__actions {
+.gallery-confirm__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 850;
+}
+
+.gallery-confirm__check input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--danger);
+}
+
+.gallery-confirm__hint,
+.app-confirm__hint {
+  margin-top: 0.25rem !important;
+  color: #8b5e34 !important;
+  font-size: 0.8rem !important;
+}
+
+.app-confirm__summary {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+}
+
+.app-confirm__summary span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fffaf1;
+  color: var(--muted-ink);
+  font-size: 0.76rem;
+  font-weight: 850;
+  line-height: 1;
+  padding: 0.42rem 0.55rem;
+}
+
+.gallery-confirm__actions,
+.app-confirm__actions {
   display: grid;
   grid-column: 1 / -1;
   grid-template-columns: repeat(2, minmax(0, 1fr));

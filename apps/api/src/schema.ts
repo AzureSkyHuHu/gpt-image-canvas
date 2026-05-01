@@ -3,6 +3,7 @@ import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
+  ownerTokenId: text("owner_token_id").notNull().default("local"),
   name: text("name").notNull(),
   snapshotJson: text("snapshot_json").notNull(),
   createdAt: text("created_at").notNull(),
@@ -11,6 +12,7 @@ export const projects = sqliteTable("projects", {
 
 export const assets = sqliteTable("assets", {
   id: text("id").primaryKey(),
+  ownerTokenId: text("owner_token_id").notNull().default("local"),
   fileName: text("file_name").notNull(),
   relativePath: text("relative_path").notNull(),
   mimeType: text("mime_type").notNull(),
@@ -30,6 +32,7 @@ export const assets = sqliteTable("assets", {
 
 export const storageConfigs = sqliteTable("storage_configs", {
   id: text("id").primaryKey(),
+  ownerTokenId: text("owner_token_id").notNull().default("local"),
   provider: text("provider").notNull(),
   enabled: integer("enabled").notNull(),
   secretId: text("secret_id"),
@@ -57,6 +60,7 @@ export const accessTokens = sqliteTable("access_tokens", {
 
 export const generationRecords = sqliteTable("generation_records", {
   id: text("id").primaryKey(),
+  ownerTokenId: text("owner_token_id").notNull().default("local"),
   mode: text("mode").notNull(),
   prompt: text("prompt").notNull(),
   effectivePrompt: text("effective_prompt").notNull(),
@@ -74,6 +78,7 @@ export const generationRecords = sqliteTable("generation_records", {
 
 export const generationOutputs = sqliteTable("generation_outputs", {
   id: text("id").primaryKey(),
+  ownerTokenId: text("owner_token_id").notNull().default("local"),
   generationId: text("generation_id")
     .notNull()
     .references(() => generationRecords.id, { onDelete: "cascade" }),

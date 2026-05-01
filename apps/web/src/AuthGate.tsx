@@ -1,5 +1,5 @@
-import { Copy, Eye, EyeOff, Loader2, LogOut, Plus, Shield, Trash2 } from "lucide-react";
-import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { ChevronDown, Copy, Eye, EyeOff, Loader2, LogOut, Plus, Shield, Trash2 } from "lucide-react";
+import { type CSSProperties, type FormEvent, type PointerEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AccessTokenView,
   AdminMeResponse,
@@ -13,6 +13,24 @@ interface AuthGateProps {
 
 type AuthStatus = "loading" | "ready" | "locked";
 type AdminStatus = "unknown" | "authenticated" | "guest";
+type SessionMenuPlacement = "above" | "below";
+type SessionMenuAlign = "start" | "end";
+
+interface SessionBarPosition {
+  left: number;
+  bottom: number;
+}
+
+interface SessionBarDragState {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  startLeft: number;
+  startBottom: number;
+  width: number;
+  height: number;
+  dragging: boolean;
+}
 
 interface TokenFormState {
   label: string;
@@ -31,6 +49,10 @@ const defaultTokenForm: TokenFormState = {
   upstreamModel: "gpt-image-2",
   enabled: true
 };
+
+const SESSION_BAR_POSITION_KEY = "gic-session-bar-position";
+const SESSION_BAR_MARGIN = 8;
+const SESSION_BAR_DRAG_THRESHOLD = 4;
 
 export function AuthGate({ children }: AuthGateProps) {
   const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
@@ -51,6 +73,11 @@ export function AuthGate({ children }: AuthGateProps) {
   const [editingId, setEditingId] = useState<string | undefined>();
   const [showAdmin, setShowAdmin] = useState(false);
   const [showCreatedToken, setShowCreatedToken] = useState(false);
+  const [showSessionBar, setShowSessionBar] = useState(false);
+  const [sessionBarPosition, setSessionBarPosition] = useState<SessionBarPosition | undefined>(() => readSessionBarPosition());
+  const sessionBarRef = useRef<HTMLDivElement | null>(null);
+  const sessionBarDragRef = useRef<SessionBarDragState | undefined>();
+  const suppressSessionToggleRef = useRef(false);
 
   useEffect(() => {
     void refreshAuth();
@@ -62,6 +89,14 @@ export function AuthGate({ children }: AuthGateProps) {
     () => [...tokens].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [tokens]
   );
+  const sessionMenuPlacement = getSessionMenuPlacement(sessionBarPosition);
+  const sessionMenuAlign = getSessionMenuAlign(sessionBarPosition);
+  const sessionBarStyle: CSSProperties | undefined = sessionBarPosition
+    ? {
+        left: `${sessionBarPosition.left}px`,
+        bottom: `${sessionBarPosition.bottom}px`
+      }
+    : undefined;
 
   async function refreshAuth(): Promise<void> {
     try {
@@ -270,6 +305,76 @@ export function AuthGate({ children }: AuthGateProps) {
     }));
   }
 
+  function updateSessionBarPosition(position: SessionBarPosition): void {
+    setSessionBarPosition(position);
+    saveSessionBarPosition(position);
+  }
+
+  function startSessionBarDrag(event: PointerEvent<HTMLButtonElement>): void {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const bar = sessionBarRef.current;
+    if (!bar) {
+      return;
+    }
+
+    const rect = bar.getBoundingClientRect();
+    sessionBarDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startLeft: rect.left,
+      startBottom: window.innerHeight - rect.bottom,
+      width: rect.width,
+      height: rect.height,
+      dragging: false
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveSessionBarDrag(event: PointerEvent<HTMLButtonElement>): void {
+    const drag = sessionBarDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const deltaX = event.clientX - drag.startX;
+    const deltaY = event.clientY - drag.startY;
+    if (!drag.dragging && Math.hypot(deltaX, deltaY) < SESSION_BAR_DRAG_THRESHOLD) {
+      return;
+    }
+
+    drag.dragging = true;
+    event.preventDefault();
+    updateSessionBarPosition(
+      clampSessionBarPosition({
+        left: drag.startLeft + deltaX,
+        bottom: drag.startBottom - deltaY
+      }, drag.width, drag.height)
+    );
+  }
+
+  function endSessionBarDrag(event: PointerEvent<HTMLButtonElement>): void {
+    const drag = sessionBarDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    if (drag.dragging) {
+      suppressSessionToggleRef.current = true;
+      window.setTimeout(() => {
+        suppressSessionToggleRef.current = false;
+      }, 0);
+    }
+
+    sessionBarDragRef.current = undefined;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
   if (authStatus === "loading") {
     return (
       <div className="auth-shell">
@@ -285,11 +390,44 @@ export function AuthGate({ children }: AuthGateProps) {
     return (
       <>
         {authEnabled ? (
-          <div className="auth-session-bar">
-            <span>{userLabel ? `当前访问：${userLabel}` : "已授权访问"}</span>
-            <button type="button" onClick={() => void logoutAccess()}>
-              退出
+          <div
+            className="auth-session-bar"
+            data-expanded={showSessionBar}
+            data-menu-placement={sessionMenuPlacement}
+            data-menu-align={sessionMenuAlign}
+            ref={sessionBarRef}
+            style={sessionBarStyle}
+          >
+            <button
+              type="button"
+              className="auth-session-bar__toggle"
+              onClick={(event) => {
+                if (suppressSessionToggleRef.current) {
+                  event.preventDefault();
+                  return;
+                }
+                setShowSessionBar((value) => !value);
+              }}
+              onPointerDown={startSessionBarDrag}
+              onPointerMove={moveSessionBarDrag}
+              onPointerUp={endSessionBarDrag}
+              onPointerCancel={endSessionBarDrag}
+              aria-expanded={showSessionBar}
+              aria-label={showSessionBar ? "收起访问状态" : "展开访问状态"}
+              title={showSessionBar ? "收起访问状态" : "展开访问状态"}
+            >
+              <Shield size={16} aria-hidden="true" />
+              <ChevronDown size={15} aria-hidden="true" />
             </button>
+            {showSessionBar ? (
+              <div className="auth-session-bar__menu">
+                <span>{userLabel ? `当前访问：${userLabel}` : "已授权访问"}</span>
+                <button type="button" onClick={() => void logoutAccess()}>
+                  <LogOut size={15} aria-hidden="true" />
+                  退出
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
         {children}
@@ -507,4 +645,69 @@ function maskValue(value: string): string {
     return `${value.slice(0, 2)}...${value.slice(-2)}`;
   }
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function readSessionBarPosition(): SessionBarPosition | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(SESSION_BAR_POSITION_KEY);
+    if (!raw) {
+      return undefined;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<SessionBarPosition>;
+    if (!Number.isFinite(parsed.left) || !Number.isFinite(parsed.bottom)) {
+      return undefined;
+    }
+
+    return clampSessionBarPosition({
+      left: Number(parsed.left),
+      bottom: Number(parsed.bottom)
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function saveSessionBarPosition(position: SessionBarPosition): void {
+  try {
+    window.localStorage.setItem(SESSION_BAR_POSITION_KEY, JSON.stringify(position));
+  } catch {
+    // Ignore storage failures; dragging should still work for the current page.
+  }
+}
+
+function clampSessionBarPosition(position: SessionBarPosition, width = 48, height = 48): SessionBarPosition {
+  if (typeof window === "undefined") {
+    return position;
+  }
+
+  return {
+    left: clampNumber(position.left, SESSION_BAR_MARGIN, Math.max(SESSION_BAR_MARGIN, window.innerWidth - width - SESSION_BAR_MARGIN)),
+    bottom: clampNumber(position.bottom, SESSION_BAR_MARGIN, Math.max(SESSION_BAR_MARGIN, window.innerHeight - height - SESSION_BAR_MARGIN))
+  };
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getSessionMenuPlacement(position: SessionBarPosition | undefined): SessionMenuPlacement {
+  if (typeof window === "undefined" || !position) {
+    return "above";
+  }
+
+  const buttonBottom = window.innerHeight - position.bottom;
+  return buttonBottom < window.innerHeight / 2 ? "below" : "above";
+}
+
+function getSessionMenuAlign(position: SessionBarPosition | undefined): SessionMenuAlign {
+  if (typeof window === "undefined" || !position) {
+    return "start";
+  }
+
+  return position.left > window.innerWidth / 2 ? "end" : "start";
 }

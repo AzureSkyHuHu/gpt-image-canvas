@@ -67,6 +67,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
   const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
   const [selectedItem, setSelectedItem] = useState<GalleryImageItem | null>(null);
   const [pendingDeleteItem, setPendingDeleteItem] = useState<GalleryImageItem | null>(null);
+  const [deleteAssetWithOutput, setDeleteAssetWithOutput] = useState(false);
   const [deletingOutputId, setDeletingOutputId] = useState<string | null>(null);
   const statusTimerRef = useRef<number | undefined>();
 
@@ -191,15 +192,21 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
 
   function requestDelete(item: GalleryImageItem): void {
     setError("");
+    setDeleteAssetWithOutput(false);
     setPendingDeleteItem(item);
   }
 
-  async function deleteItem(item: GalleryImageItem): Promise<void> {
+  async function deleteItem(item: GalleryImageItem, deleteAsset: boolean): Promise<void> {
     setDeletingOutputId(item.outputId);
     setError("");
 
     try {
-      const response = await fetch(`/api/gallery/${encodeURIComponent(item.outputId)}`, {
+      const url = new URL(`/api/gallery/${encodeURIComponent(item.outputId)}`, window.location.origin);
+      if (deleteAsset) {
+        url.searchParams.set("deleteAsset", "true");
+      }
+
+      const response = await fetch(`${url.pathname}${url.search}`, {
         method: "DELETE"
       });
       if (!response.ok) {
@@ -210,7 +217,7 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
       setSelectedItem((current) => (current?.outputId === item.outputId ? null : current));
       setPendingDeleteItem(null);
       onDeleted(item.outputId);
-      showStatus("已从 Gallery 和生成历史移除。");
+      showStatus(deleteAsset ? "已移除记录，并尝试删除图片资源。" : "已从 Gallery 和生成历史移除。");
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "删除失败，请重试。");
     } finally {
@@ -318,9 +325,11 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
       {pendingDeleteItem ? (
         <DeleteGalleryDialog
           deleting={deletingOutputId === pendingDeleteItem.outputId}
+          deleteAsset={deleteAssetWithOutput}
           item={pendingDeleteItem}
+          onDeleteAssetChange={setDeleteAssetWithOutput}
           onCancel={() => setPendingDeleteItem(null)}
-          onConfirm={() => void deleteItem(pendingDeleteItem)}
+          onConfirm={() => void deleteItem(pendingDeleteItem, deleteAssetWithOutput)}
         />
       ) : null}
     </main>
@@ -665,14 +674,18 @@ function GalleryDetailDialog({
 
 function DeleteGalleryDialog({
   deleting,
+  deleteAsset,
   item,
   onCancel,
-  onConfirm
+  onConfirm,
+  onDeleteAssetChange
 }: {
   deleting: boolean;
+  deleteAsset: boolean;
   item: GalleryImageItem;
   onCancel: () => void;
   onConfirm: () => void;
+  onDeleteAssetChange: (value: boolean) => void;
 }) {
   return (
     <div className="gallery-confirm-backdrop" data-testid="gallery-delete-dialog" role="presentation">
@@ -690,6 +703,18 @@ function DeleteGalleryDialog({
           <h2 id="gallery-delete-title">移除这张 Gallery 图片？</h2>
           <p id="gallery-delete-description">
             将从 Gallery 和生成历史移除“{promptExcerpt(item.prompt)}”。画布中的图片、本地文件和资产记录会保留。
+          </p>
+          <label className="gallery-confirm__check">
+            <input
+              checked={deleteAsset}
+              disabled={deleting}
+              type="checkbox"
+              onChange={(event) => onDeleteAssetChange(event.target.checked)}
+            />
+            <span>同时彻底删除图片资源</span>
+          </label>
+          <p className="gallery-confirm__hint">
+            勾选后会尝试删除本地图片文件、预览缓存和资产记录；如果该图片仍被其他记录引用，则会保留资源。
           </p>
         </div>
         <div className="gallery-confirm__actions">

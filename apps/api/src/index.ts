@@ -608,7 +608,7 @@ function parseCount(value: unknown): ParseResult<GenerationCount> {
 
   return {
     ok: false,
-    error: errorResponse("invalid_request", "生成数量只能是 1、2 或 4。")
+    error: errorResponse("invalid_request", "生成数量只能是 1、2、4、8 或 16。")
   };
 }
 

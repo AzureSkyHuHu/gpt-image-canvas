@@ -122,6 +122,8 @@ const promptStarters = [
 ] as const;
 const quickSizePresetIds = new Set(["square-1k", "poster-portrait", "poster-landscape", "story-9-16", "video-16-9", "wide-2k"]);
 const quickSizePresets = SIZE_PRESETS.filter((preset) => quickSizePresetIds.has(preset.id));
+const PRIMARY_GENERATION_COUNTS: readonly GenerationCount[] = [1, 2, 4];
+const EXTENDED_GENERATION_COUNTS: readonly GenerationCount[] = [8, 16];
 
 type GalleryPageModule = { default: typeof import("./GalleryPage").GalleryPage };
 let galleryPageModulePromise: Promise<GalleryPageModule> | undefined;
@@ -537,7 +539,7 @@ function displaySize(size: ImageSize): { width: number; height: number } {
 
 function createCenteredPlacements(editor: Editor, countValue: GenerationCount, size: ImageSize): GenerationPlaceholderPlacement[] {
   const placeholderSize = displaySize(size);
-  const columns = countValue === 1 ? 1 : 2;
+  const columns = countValue >= 8 ? 4 : countValue === 1 ? 1 : 2;
   const rows = Math.ceil(countValue / columns);
   const gap = 48;
   const cellWidth = placeholderSize.width;
@@ -1346,6 +1348,7 @@ export function App() {
   );
   const hiddenHistoryCount = Math.max(0, generationHistory.length - HISTORY_COLLAPSED_LIMIT);
   const hasAdditionalHistory = hiddenHistoryCount > 0;
+  const isExtendedCountSelected = EXTENDED_GENERATION_COUNTS.includes(count);
   const panelStatus = useMemo<PanelStatus | null>(() => {
     if (isGenerating) {
       return {
@@ -2480,7 +2483,7 @@ export function App() {
           <div>
             <span className="control-label">数量</span>
             <div className="mt-2 grid grid-cols-3 gap-2">
-              {GENERATION_COUNTS.map((item) => (
+              {PRIMARY_GENERATION_COUNTS.map((item) => (
                 <button
                   className={item === count ? "segmented-control is-active" : "segmented-control"}
                   key={item}
@@ -2491,6 +2494,25 @@ export function App() {
                 </button>
               ))}
             </div>
+
+            <details className="group mt-2 rounded-md border border-neutral-200 bg-neutral-50">
+              <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium text-neutral-800">
+                <span>{isExtendedCountSelected ? `更多数量：${count} 张` : "更多数量"}</span>
+                <ChevronDown className="size-4 shrink-0 text-neutral-500 transition group-open:rotate-180" aria-hidden="true" />
+              </summary>
+              <div className="grid grid-cols-2 gap-2 border-t border-neutral-200 px-3 py-3">
+                {EXTENDED_GENERATION_COUNTS.map((item) => (
+                  <button
+                    className={item === count ? "segmented-control is-active" : "segmented-control"}
+                    key={item}
+                    type="button"
+                    onClick={() => setCount(item)}
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </details>
           </div>
 
           <details className="rounded-md border border-neutral-200 bg-neutral-50">

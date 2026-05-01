@@ -66,7 +66,7 @@ export type StylePresetId = (typeof STYLE_PRESETS)[number]["id"];
 
 export const IMAGE_QUALITIES: ImageQuality[] = ["auto", "low", "medium", "high"];
 export const OUTPUT_FORMATS: OutputFormat[] = ["png", "jpeg", "webp"];
-export const GENERATION_COUNTS = [1, 2, 4] as const;
+export const GENERATION_COUNTS = [1, 2, 4, 8, 16] as const;
 export type GenerationCount = (typeof GENERATION_COUNTS)[number];
 
 export interface ImageSize {

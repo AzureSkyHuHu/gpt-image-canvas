@@ -30,6 +30,7 @@ Windows PowerShell:
 ```powershell
 pnpm install
 Copy-Item .env.example .env
+# Fill APP_ADMIN_PASSWORD and APP_SESSION_SECRET in .env first. For temporary local single-user development, set APP_AUTH_ENABLED=false.
 pnpm dev
 ```
 
@@ -38,10 +39,11 @@ macOS/Linux:
 ```sh
 pnpm install
 cp .env.example .env
+# Fill APP_ADMIN_PASSWORD and APP_SESSION_SECRET in .env first. For temporary local single-user development, set APP_AUTH_ENABLED=false.
 pnpm dev
 ```
 
-Set `OPENAI_API_KEY` in `.env` before live generation. The app uses the official OpenAI Image API with `gpt-image-2` by default. To route requests through an OpenAI-compatible endpoint, set `OPENAI_BASE_URL` in `.env`; to use a different compatible image model, set `OPENAI_IMAGE_MODEL`.
+Authentication is enabled by default. Set `OPENAI_API_KEY` in `.env` before live generation, or bind an upstream key to an access token from the admin panel. The app uses the official OpenAI Image API with `gpt-image-2` by default. To route requests through an OpenAI-compatible endpoint, set `OPENAI_BASE_URL` in `.env`; to use a different compatible image model, set `OPENAI_IMAGE_MODEL`.
 
 Open the web app at `http://localhost:5173`.
 
@@ -116,7 +118,8 @@ Windows PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
-docker compose config --quiet --no-env-resolution
+# Fill APP_ADMIN_PASSWORD and APP_SESSION_SECRET in .env.
+docker compose config --quiet
 docker compose up --build
 ```
 
@@ -124,11 +127,12 @@ macOS/Linux:
 
 ```sh
 cp .env.example .env
-docker compose config --quiet --no-env-resolution
+# Fill APP_ADMIN_PASSWORD and APP_SESSION_SECRET in .env.
+docker compose config --quiet
 docker compose up --build
 ```
 
-Open the app at `http://localhost:8787` by default. Set `PORT` in `.env` before starting Docker Compose to use a different localhost port.
+Open the app at `http://localhost:8787` by default. Set `PORT` in `.env` before starting Docker Compose to use a different localhost port. For public deployment and the Nginx sample, see [deployment docs](docs/deployment.zh-CN.md).
 
 Docker Compose also sets `SQLITE_JOURNAL_MODE=DELETE` and `SQLITE_LOCKING_MODE=EXCLUSIVE` by default. This avoids SQLite `SQLITE_IOERR_SHMOPEN` failures on bind-mounted `./data` directories in Docker Desktop while preserving projects and generated assets on the host.
 
@@ -192,7 +196,7 @@ The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so project
 - High-resolution generation timeouts: upstream image requests default to 20 minutes; increase `OPENAI_IMAGE_TIMEOUT_MS` in `.env` if needed.
 - Port already in use: set `PORT` in `.env` for the API/Docker runtime. If Web port `5173` is occupied, stop the process using it, or run `pnpm web:dev -- --port 5174` explicitly and open the printed URL.
 - Docker build cannot pull the Node base image: use a locally cached image with `NODE_IMAGE=node:23-bullseye-slim docker compose up --build` on macOS/Linux or `$env:NODE_IMAGE = 'node:23-bullseye-slim'` followed by `docker compose up --build` in Windows PowerShell, or restore Docker Hub access and rerun `docker compose up --build`.
-- Docker config output includes `.env` values by default. Use `docker compose config --quiet --no-env-resolution` for validation when real credentials are present, and do not share expanded config output.
+- Docker config output includes `.env` values by default. Use `docker compose config --quiet` for validation when real credentials are present, and do not run or share full expanded `docker compose config` output.
 - SQLite `SQLITE_IOERR_SHMOPEN` in Docker: keep the Compose defaults `SQLITE_JOURNAL_MODE=DELETE` and `SQLITE_LOCKING_MODE=EXCLUSIVE`, rebuild, and make sure no local API process is using the same `data/` database at the same time.
 - SQLite `SQLITE_CORRUPT`: stop all app processes, back up `data/`, and restore from backup or remove the SQLite files to let the app create a clean database. Generated image files under `data/assets/` can be kept.
 - `/api/project` returns 400 while autosaving: check Docker logs for `Project save rejected`. Large canvases are supported up to 100 MB snapshots; imported data URL images can still make snapshots very large.

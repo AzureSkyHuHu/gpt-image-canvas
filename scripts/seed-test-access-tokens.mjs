@@ -12,7 +12,7 @@ async function main() {
   const upstreams = collectOpenAIUpstreams(envEntries);
   const adminPassword = env.APP_ADMIN_PASSWORD?.trim();
   const port = env.PORT?.trim() || "8787";
-  const origin = (process.env.APP_ORIGIN || `http://localhost:${port}`).replace(/\/+$/u, "");
+  const origin = (process.env.APP_ORIGIN || env.APP_ORIGIN?.trim() || `http://localhost:${port}`).replace(/\/+$/u, "");
   const model = env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2";
 
   if (!adminPassword) {

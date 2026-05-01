@@ -50,6 +50,7 @@ OPENAI_IMAGE_MODEL=gpt-image-2
 - `APP_ADMIN_PASSWORD` 用于登录管理员面板，创建和管理朋友访问 token。
 - `APP_SESSION_SECRET` 用于签名登录 Cookie，开启鉴权时至少 32 个字符。
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` 是未开启鉴权时的默认上游；开启鉴权后，图片生成优先使用当前访问 token 映射的上游 key、URL 和模型。
+- `.env.example` 默认已经设置 `APP_AUTH_ENABLED=true`。如果只是本地单人开发，可以临时改成 `false`，但公网部署不要关闭。
 
 可以生成本地随机值：
 
@@ -106,25 +107,13 @@ http://gpt_image_canvas_app:8787
 http://127.0.0.1:8787
 ```
 
-Nginx 示例：
+仓库提供了一份 Nginx 示例配置：
 
-```nginx
-server {
-  listen 80;
-  server_name image.example.com;
-
-  client_max_body_size 120m;
-
-  location / {
-    proxy_pass http://gpt_image_canvas_app:8787;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-Host $host;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-  }
-}
+```text
+deploy/nginx/gpt-image-canvas.conf
 ```
+
+复制到 Nginx 的 `conf.d` 或站点配置目录后，把 `image.example.com` 替换成自己的域名。配置里默认把请求转发到同 Docker 网络里的 `gpt_image_canvas_app:8787`。
 
 图片编辑和画布保存可能包含较大的 base64 数据，反向代理需要允许较大的请求体；上例设置为 `120m`。
 
@@ -178,6 +167,7 @@ docker compose up -d
 当前 `docker-compose.yml` 做了这些部署向配置：
 
 - `container_name` 默认固定为 `gpt_image_canvas_app`，便于反向代理引用。
+- `APP_CONTAINER_NAME` 可以覆盖容器名；如果改了容器名，Nginx upstream 里的容器名也要同步修改。
 - `restart: always`，宿主机重启或容器异常退出后自动拉起。
 - `extra_hosts: host.docker.internal:host-gateway`，容器内可访问宿主机服务。
 - `./data:/app/data` 持久化运行时数据。

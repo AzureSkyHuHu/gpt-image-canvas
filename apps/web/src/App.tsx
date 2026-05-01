@@ -28,7 +28,8 @@ import {
   type TLShapeId,
   type TLStoreSnapshot,
   type TLComponents,
-  type TldrawOptions
+  type TldrawOptions,
+  useIsDarkMode
 } from "tldraw";
 import {
   GENERATION_PLACEHOLDER_TYPE,
@@ -76,9 +77,6 @@ const shapeUtils = [GenerationPlaceholderShapeUtil];
 const tldrawOptions = {
   debouncedZoomThreshold: 80
 } satisfies Partial<TldrawOptions>;
-const tldrawComponents = {
-  StylePanel: null
-} satisfies TLComponents;
 const TLDRAW_LICENSE_KEY =
   "tldraw-2026-08-08/WyJ3dGU4bldjRyIsWyIqIl0sMTYsIjIwMjYtMDgtMDgiXQ.Xt7lTydUhMnKfHfp+g8Mrs9gtJjlB8uPyYMniFEfRfruCYdYEl9J0uZl0lMAf6o7GdDB1zXOVhWLFAipssI6Cw";
 
@@ -1219,6 +1217,16 @@ function TopNavigation({
   );
 }
 
+function CanvasThemeSync({ onChange }: { onChange: (isDarkMode: boolean) => void }) {
+  const isDarkMode = useIsDarkMode();
+
+  useEffect(() => {
+    onChange(isDarkMode);
+  }, [isDarkMode, onChange]);
+
+  return null;
+}
+
 function PanelStatusIcon({ tone }: { tone: PanelStatusTone }) {
   if (tone === "progress") {
     return <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" aria-hidden="true" />;
@@ -1267,6 +1275,7 @@ export function App() {
   const [isStorageSaving, setIsStorageSaving] = useState(false);
   const [isStorageTesting, setIsStorageTesting] = useState(false);
   const [referenceSelection, setReferenceSelection] = useState<ReferenceSelection>(missingReferenceSelection);
+  const [isCanvasDarkMode, setIsCanvasDarkMode] = useState(false);
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const panelCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<Editor | null>(null);
@@ -1286,6 +1295,14 @@ export function App() {
   const validationMessage = promptValidationMessage || dimensionValidationMessage || referenceValidationMessage;
   const shouldShowValidation = Boolean(validationMessage);
   const canGenerate = !validationMessage;
+  const tldrawComponents = useMemo(
+    () =>
+      ({
+        InFrontOfTheCanvas: () => <CanvasThemeSync onChange={setIsCanvasDarkMode} />,
+        StylePanel: null
+      }) satisfies TLComponents,
+    []
+  );
 
   const navigateToRoute = useCallback((nextRoute: AppRoute): void => {
     const nextPath = pathForRoute(nextRoute);
@@ -2103,7 +2120,7 @@ export function App() {
   }
 
   return (
-    <div className="app-root">
+    <div className="app-root" data-canvas-theme={isCanvasDarkMode ? "dark" : "light"}>
       <TopNavigation route={route} onNavigate={navigateToRoute} onPreloadGallery={preloadGalleryPage} />
       <main className="app-shell app-view relative flex min-h-0 overflow-hidden bg-neutral-950 text-neutral-900" data-active-route={route} hidden={route !== "canvas"}>
       <section

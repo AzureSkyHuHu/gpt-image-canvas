@@ -4,6 +4,27 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import type { Context } from "hono";
+import {
+  adminMe,
+  authConfigWarnings,
+  authMe,
+  authMiddleware,
+  currentAccessPrincipal,
+  isAuthEnabled,
+  loginAsAdmin,
+  loginWithAccessToken,
+  logoutAccess,
+  logoutAdmin,
+  type AuthVariables
+} from "./access-control.js";
+import {
+  AccessTokenStoreError,
+  createAccessToken,
+  deleteAccessToken,
+  ensureBootstrapAccessToken,
+  listAccessTokens,
+  updateAccessToken
+} from "./access-token-store.js";
 import { parsePreviewWidth, readStoredAssetPreview } from "./asset-preview.js";
 import {
   GENERATION_COUNTS,
@@ -14,12 +35,14 @@ import {
   composePrompt,
   validateSceneImageSize,
   type AppConfig,
+  type CreateAccessTokenRequest,
   type GenerationCount,
   type ImageQuality,
   type ImageSize,
   type OutputFormat,
   type ReferenceImageInput,
   type SaveStorageConfigRequest,
+  type UpdateAccessTokenRequest,
   type StylePresetId
 } from "./contracts.js";
 import { closeDatabase } from "./database.js";
@@ -28,23 +51,40 @@ import {
   createOpenAIImageProvider,
   getConfiguredImageModel,
   getOpenAIImageProviderConfig,
+  getOpenAIImageProviderConfigFromOverride,
   type EditImageProviderInput,
   type ImageProviderInput
 } from "./image-provider.js";
 import { getStoredAssetFile, readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "./image-generation.js";
 import { deleteGalleryOutput, getGalleryImages, getProjectState, saveProjectSnapshot } from "./project-store.js";
-import { runtimePaths, serverConfig } from "./runtime.js";
+import { accessControlConfig, runtimePaths, serverConfig } from "./runtime.js";
 import { getStorageConfig, saveStorageConfig, testStorageConfig } from "./storage-config.js";
 
 const MAX_PROJECT_SNAPSHOT_BYTES = 100 * 1024 * 1024;
 const MAX_PROJECT_NAME_LENGTH = 120;
+
+type AppEnv = {
+  Variables: AuthVariables;
+};
 
 interface ProjectPayload {
   name?: string;
   snapshotJson: string;
 }
 
-export const app = new Hono();
+export const app = new Hono<AppEnv>();
+
+for (const warning of authConfigWarnings()) {
+  console.warn(warning);
+}
+
+ensureBootstrapAccessToken({
+  accessToken: accessControlConfig.bootstrapAccessToken,
+  label: accessControlConfig.bootstrapAccessLabel,
+  upstreamApiKey: accessControlConfig.bootstrapUpstreamApiKey,
+  upstreamBaseURL: accessControlConfig.bootstrapUpstreamBaseURL,
+  upstreamModel: accessControlConfig.bootstrapUpstreamModel
+});
 
 app.onError((error, c) => {
   console.error(error);
@@ -59,14 +99,124 @@ app.onError((error, c) => {
   );
 });
 
+app.use("/api/*", authMiddleware());
+
 app.get("/api/health", (c) =>
   c.json({
     status: "ok"
   })
 );
 
+app.get("/api/auth/me", (c) => c.json(authMe(c)));
+
+app.post("/api/auth/login", async (c) => {
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+  if (!isRecord(payload.value) || typeof payload.value.token !== "string") {
+    return c.json(errorResponse("invalid_auth_token", "请输入访问 token。"), 400);
+  }
+
+  try {
+    const result = loginWithAccessToken(c, payload.value.token);
+    if (!result) {
+      return c.json(errorResponse("invalid_auth_token", "访问 token 无效或已停用。"), 401);
+    }
+    return c.json(result);
+  } catch (error) {
+    return c.json(errorResponse("invalid_auth_token", errorToMessage(error)), 400);
+  }
+});
+
+app.post("/api/auth/logout", (c) => {
+  logoutAccess(c);
+  return c.json({ ok: true });
+});
+
+app.get("/api/admin/me", (c) => c.json(adminMe(c)));
+
+app.post("/api/admin/login", async (c) => {
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+  if (!isRecord(payload.value) || typeof payload.value.password !== "string") {
+    return c.json(errorResponse("invalid_admin_password", "请输入管理员密码。"), 400);
+  }
+
+  if (!loginAsAdmin(c, payload.value.password)) {
+    return c.json(errorResponse("invalid_admin_password", "管理员密码无效。"), 401);
+  }
+
+  return c.json(adminMe(c));
+});
+
+app.post("/api/admin/logout", (c) => {
+  logoutAdmin(c);
+  return c.json({ ok: true });
+});
+
+app.get("/api/admin/tokens", (c) =>
+  c.json({
+    items: listAccessTokens()
+  })
+);
+
+app.post("/api/admin/tokens", async (c) => {
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+  if (!isRecord(payload.value)) {
+    return c.json(errorResponse("invalid_access_token", "Token payload must be a JSON object."), 400);
+  }
+
+  const parsed = parseCreateAccessTokenPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    return c.json(createAccessToken(parsed.value), 201);
+  } catch (error) {
+    return accessTokenStoreErrorJson(c, error);
+  }
+});
+
+app.patch("/api/admin/tokens/:id", async (c) => {
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+  if (!isRecord(payload.value)) {
+    return c.json(errorResponse("invalid_access_token", "Token payload must be a JSON object."), 400);
+  }
+
+  const parsed = parseUpdateAccessTokenPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    return c.json(updateAccessToken(c.req.param("id"), parsed.value));
+  } catch (error) {
+    return accessTokenStoreErrorJson(c, error);
+  }
+});
+
+app.delete("/api/admin/tokens/:id", (c) => {
+  if (!deleteAccessToken(c.req.param("id"))) {
+    return c.json(errorResponse("not_found", "找不到这个访问 token。"), 404);
+  }
+
+  return c.json({
+    ok: true
+  });
+});
+
 app.get("/api/config", (c) => {
-  const configuredModel = getConfiguredImageModel();
+  const configuredModel = currentAccessPrincipal(c)?.upstreamModel || getConfiguredImageModel();
   const config: AppConfig = {
     model: configuredModel,
     models: [configuredModel],
@@ -209,7 +359,7 @@ app.post("/api/images/generate", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  const providerConfig = getOpenAIImageProviderConfig();
+  const providerConfig = getRequestImageProviderConfig(c);
   if (!providerConfig.ok) {
     return providerErrorJson(c, providerConfig.error);
   }
@@ -237,7 +387,7 @@ app.post("/api/images/edit", async (c) => {
     return c.json(parsed.error, 400);
   }
 
-  const providerConfig = getOpenAIImageProviderConfig();
+  const providerConfig = getRequestImageProviderConfig(c);
   if (!providerConfig.ok) {
     return providerErrorJson(c, providerConfig.error);
   }
@@ -332,6 +482,44 @@ function providerErrorJson(_c: Context, error: ProviderError) {
       "Content-Type": "application/json"
     }
   });
+}
+
+function accessTokenStoreErrorJson(c: Context, error: unknown) {
+  if (error instanceof AccessTokenStoreError) {
+    return c.json(errorResponse(error.code, error.message), error.status as 400 | 404 | 409);
+  }
+  throw error;
+}
+
+function getRequestImageProviderConfig(c: Context<AppEnv>):
+  | {
+      ok: true;
+      config: ReturnType<typeof getOpenAIImageProviderConfigFromOverride>;
+    }
+  | {
+      ok: false;
+      error: ProviderError;
+    } {
+  if (!isAuthEnabled()) {
+    return getOpenAIImageProviderConfig();
+  }
+
+  const principal = currentAccessPrincipal(c);
+  if (!principal) {
+    return {
+      ok: false,
+      error: new ProviderError("missing_api_key", "请先输入访问 token。", 401)
+    };
+  }
+
+  return {
+    ok: true,
+    config: getOpenAIImageProviderConfigFromOverride({
+      apiKey: principal.upstreamApiKey,
+      baseURL: principal.upstreamBaseURL,
+      model: principal.upstreamModel
+    })
+  };
 }
 
 function providerHttpStatus(status: number): number {
@@ -444,6 +632,63 @@ function parseStorageConfigPayload(input: unknown): ParseResult<SaveStorageConfi
         keyPrefix: stringValue(input.cos.keyPrefix) ?? ""
       }
     }
+  };
+}
+
+function parseCreateAccessTokenPayload(input: Record<string, unknown>): ParseResult<CreateAccessTokenRequest> {
+  const label = stringValue(input.label);
+  const upstreamApiKey = stringValue(input.upstreamApiKey);
+  if (!label?.trim()) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_access_token", "请提供 token 名称。")
+    };
+  }
+  if (!upstreamApiKey?.trim()) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_upstream_api_key", "请提供上游 API key。")
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      label: label.trim(),
+      accessToken: stringValue(input.accessToken),
+      upstreamApiKey: upstreamApiKey.trim(),
+      upstreamBaseURL: stringValue(input.upstreamBaseURL),
+      upstreamModel: stringValue(input.upstreamModel),
+      enabled: input.enabled === false ? false : undefined
+    }
+  };
+}
+
+function parseUpdateAccessTokenPayload(input: Record<string, unknown>): ParseResult<UpdateAccessTokenRequest> {
+  const value: UpdateAccessTokenRequest = {};
+
+  if ("label" in input) {
+    value.label = stringValue(input.label) ?? "";
+  }
+  if ("accessToken" in input) {
+    value.accessToken = stringValue(input.accessToken) ?? "";
+  }
+  if ("upstreamApiKey" in input) {
+    value.upstreamApiKey = stringValue(input.upstreamApiKey) ?? "";
+  }
+  if ("upstreamBaseURL" in input) {
+    value.upstreamBaseURL = input.upstreamBaseURL === null ? null : (stringValue(input.upstreamBaseURL) ?? "");
+  }
+  if ("upstreamModel" in input) {
+    value.upstreamModel = input.upstreamModel === null ? null : (stringValue(input.upstreamModel) ?? "");
+  }
+  if ("enabled" in input) {
+    value.enabled = input.enabled === true;
+  }
+
+  return {
+    ok: true,
+    value
   };
 }
 

@@ -101,6 +101,19 @@ export function getOpenAIImageProviderConfig():
   };
 }
 
+export function getOpenAIImageProviderConfigFromOverride(input: {
+  apiKey: string;
+  baseURL?: string;
+  model?: string;
+}): OpenAIImageProviderConfig {
+  return {
+    apiKey: input.apiKey,
+    baseURL: input.baseURL || undefined,
+    model: input.model || getConfiguredImageModel(),
+    timeoutMs: parsePositiveInteger(process.env.OPENAI_IMAGE_TIMEOUT_MS, DEFAULT_OPENAI_IMAGE_TIMEOUT_MS)
+  };
+}
+
 export function getConfiguredImageModel(): string {
   return process.env.OPENAI_IMAGE_MODEL?.trim() || IMAGE_MODEL;
 }

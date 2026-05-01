@@ -15,9 +15,18 @@ export {
 } from "@gpt-image-canvas/shared";
 
 export type {
+  AccessTokenListResponse,
+  AccessTokenView,
+  AdminLoginRequest,
+  AdminMeResponse,
   AppConfig,
   AssetCloudUploadStatus,
+  AuthLoginRequest,
+  AuthMeResponse,
+  AuthUser,
   CloudStorageProvider,
+  CreateAccessTokenRequest,
+  CreateAccessTokenResponse,
   EditImageRequest,
   GenerateImageRequest,
   GeneratedAsset,
@@ -43,5 +52,6 @@ export type {
   StorageConfigResponse,
   StorageTestResult,
   StylePresetId,
+  UpdateAccessTokenRequest,
   ValidationResult
 } from "@gpt-image-canvas/shared";

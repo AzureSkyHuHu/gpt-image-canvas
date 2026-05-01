@@ -41,6 +41,20 @@ export const storageConfigs = sqliteTable("storage_configs", {
   updatedAt: text("updated_at").notNull()
 });
 
+export const accessTokens = sqliteTable("access_tokens", {
+  id: text("id").primaryKey(),
+  label: text("label").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  tokenPreview: text("token_preview").notNull(),
+  upstreamApiKey: text("upstream_api_key").notNull(),
+  upstreamApiKeyPreview: text("upstream_api_key_preview").notNull(),
+  upstreamBaseURL: text("upstream_base_url"),
+  upstreamModel: text("upstream_model"),
+  enabled: integer("enabled").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
 export const generationRecords = sqliteTable("generation_records", {
   id: text("id").primaryKey(),
   mode: text("mode").notNull(),

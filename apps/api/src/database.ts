@@ -79,6 +79,20 @@ CREATE TABLE IF NOT EXISTS storage_configs (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS access_tokens (
+  id TEXT PRIMARY KEY NOT NULL,
+  label TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  token_preview TEXT NOT NULL,
+  upstream_api_key TEXT NOT NULL,
+  upstream_api_key_preview TEXT NOT NULL,
+  upstream_base_url TEXT,
+  upstream_model TEXT,
+  enabled INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS generation_records (
   id TEXT PRIMARY KEY NOT NULL,
   mode TEXT NOT NULL,
@@ -108,6 +122,7 @@ CREATE TABLE IF NOT EXISTS generation_outputs (
 CREATE INDEX IF NOT EXISTS generation_records_created_at_idx ON generation_records(created_at);
 CREATE INDEX IF NOT EXISTS generation_outputs_generation_id_idx ON generation_outputs(generation_id);
 CREATE INDEX IF NOT EXISTS generation_outputs_asset_id_idx ON generation_outputs(asset_id);
+CREATE INDEX IF NOT EXISTS access_tokens_token_hash_idx ON access_tokens(token_hash);
 `);
 
 ensureColumn("assets", "cloud_provider", "cloud_provider TEXT");

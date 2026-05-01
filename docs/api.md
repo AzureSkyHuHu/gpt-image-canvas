@@ -183,6 +183,11 @@ curl -b .codex-temp/access.cookies \
 }
 ```
 
+说明：
+
+- `asset.width` / `asset.height` 是后端读取图片文件得到的真实尺寸，不只是请求里的目标尺寸。
+- 单次生成部分失败时，失败 output 会带 `error` 字段；错误信息会脱敏 `Bearer ...` 和 `sk-...` 等密钥片段。
+
 ### 参考图生成
 
 ```http
@@ -249,7 +254,7 @@ custom           自定义
 ```text
 quality: auto | low | medium | high
 outputFormat: png | jpeg | webp
-count: 1 | 2 | 4
+count: 1 | 2 | 4 | 8 | 16
 ```
 
 ## 项目与历史
@@ -401,6 +406,24 @@ GET /api/assets/:id/preview?width=512
 2048
 ```
 
+### 元数据
+
+```http
+GET /api/assets/:id/metadata
+```
+
+返回当前 token owner 下资源的真实图片尺寸。找不到资源或资源不属于当前 token 时返回 `404`。
+
+响应：
+
+```json
+{
+  "id": "asset-id",
+  "width": 2048,
+  "height": 2048
+}
+```
+
 ## 配置
 
 ### 获取生成配置
@@ -409,7 +432,11 @@ GET /api/assets/:id/preview?width=512
 GET /api/config
 ```
 
-返回当前 token 对应的模型、尺寸、风格、质量、格式、数量枚举。
+返回当前 token 对应的模型、尺寸、风格、质量、格式、数量枚举。当前 `counts` 包含：
+
+```json
+[1, 2, 4, 8, 16]
+```
 
 ### COS 配置
 

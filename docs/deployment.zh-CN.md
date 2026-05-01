@@ -72,6 +72,8 @@ docker compose config --quiet
 docker compose up -d --build
 ```
 
+推荐用 Docker 构建生产包。当前前端构建依赖新版 Node，后端图片尺寸和预览处理依赖 `sharp` 原生包；Dockerfile 会统一安装这些构建环境和依赖，避免本机 Node 或可选原生依赖版本不一致。
+
 查看状态：
 
 ```sh

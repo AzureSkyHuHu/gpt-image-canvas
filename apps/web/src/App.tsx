@@ -19,6 +19,7 @@ import {
   XCircle
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Tldraw,
   type Editor,
@@ -42,6 +43,7 @@ import {
   GenerationPlaceholderShapeUtil,
   type GenerationPlaceholderShape
 } from "./GenerationPlaceholderShape";
+import { ApiSetupDialog, HomePage } from "./HomePage";
 import {
   CUSTOM_SIZE_PRESET_ID,
   GENERATION_COUNTS,
@@ -157,7 +159,7 @@ function preloadGalleryPage(): void {
 }
 
 type PersistedSnapshot = TLEditorSnapshot | TLStoreSnapshot;
-type AppRoute = "canvas" | "gallery";
+type AppRoute = "home" | "canvas" | "gallery";
 type SaveStatus = "loading" | "saved" | "pending" | "saving" | "error";
 type GenerationMode = "text" | "reference";
 type PanelStatusTone = "progress" | "success" | "warning" | "error";
@@ -330,10 +332,18 @@ function generationValidationMessage(promptValue: string, widthValue: number, he
 }
 
 function routeFromLocation(): AppRoute {
-  return window.location.pathname === "/gallery" ? "gallery" : "canvas";
+  if (window.location.pathname === "/canvas") {
+    return "canvas";
+  }
+
+  return window.location.pathname === "/gallery" ? "gallery" : "home";
 }
 
 function pathForRoute(route: AppRoute): string {
+  if (route === "canvas") {
+    return "/canvas";
+  }
+
   return route === "gallery" ? "/gallery" : "/";
 }
 
@@ -1509,11 +1519,25 @@ function TopNavigation({
         </div>
         <nav aria-label="主要页面" className="top-navigation__links">
           <a
+            aria-current={route === "home" ? "page" : undefined}
+            className="top-navigation__link"
+            data-active={route === "home"}
+            data-testid="nav-home"
+            href="/"
+            onClick={(event) => {
+              event.preventDefault();
+              onNavigate("home");
+            }}
+          >
+            <Sparkles className="size-4" aria-hidden="true" />
+            首页
+          </a>
+          <a
             aria-current={route === "canvas" ? "page" : undefined}
             className="top-navigation__link"
             data-active={route === "canvas"}
             data-testid="nav-canvas"
-            href="/"
+            href="/canvas"
             onClick={(event) => {
               event.preventDefault();
               onNavigate("canvas");
@@ -1594,6 +1618,7 @@ export function App() {
   const [isMobileDrawer, setIsMobileDrawer] = useState(false);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [isStorageDialogOpen, setIsStorageDialogOpen] = useState(false);
+  const [isApiSetupDialogOpen, setIsApiSetupDialogOpen] = useState(false);
   const [storageConfig, setStorageConfig] = useState<StorageConfigResponse | null>(null);
   const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -1620,6 +1645,7 @@ export function App() {
   const codexPollTimerRef = useRef<number | undefined>();
   const saveRequestRef = useRef(0);
   const isGenerating = activeGenerationCount > 0;
+  const hasGenerationProvider = authStatus?.provider === "openai" || authStatus?.provider === "codex";
 
   const trimmedPrompt = prompt.trim();
   const promptValidationMessage = prompt.trim() ? "" : "请输入提示词。";
@@ -1644,10 +1670,14 @@ export function App() {
     []
   );
 
-  const navigateToRoute = useCallback((nextRoute: AppRoute): void => {
+  const navigateToRoute = useCallback((nextRoute: AppRoute, options: { replace?: boolean } = {}): void => {
     const nextPath = pathForRoute(nextRoute);
     if (window.location.pathname !== nextPath) {
-      window.history.pushState(null, "", nextPath);
+      if (options.replace) {
+        window.history.replaceState(null, "", nextPath);
+      } else {
+        window.history.pushState(null, "", nextPath);
+      }
     }
     setRoute(nextRoute);
   }, []);
@@ -1814,6 +1844,21 @@ export function App() {
   }, [loadAuthStatus]);
 
   useEffect(() => {
+    if (isAuthLoading || !authStatus || route === "gallery") {
+      return;
+    }
+
+    if (route === "home" && hasGenerationProvider) {
+      navigateToRoute("canvas", { replace: true });
+      return;
+    }
+
+    if (route === "canvas" && !hasGenerationProvider) {
+      navigateToRoute("home", { replace: true });
+    }
+  }, [authStatus, hasGenerationProvider, isAuthLoading, navigateToRoute, route]);
+
+  useEffect(() => {
     const controller = new AbortController();
 
     async function loadStorageConfig(): Promise<void> {
@@ -1861,6 +1906,24 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isApiSetupDialogOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setIsApiSetupDialogOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isApiSetupDialogOpen]);
+
   const closeAiPanel = useCallback((): void => {
     setIsAiPanelOpen(false);
     window.requestAnimationFrame(() => {
@@ -1880,6 +1943,10 @@ export function App() {
     setIsStorageDialogOpen(false);
     setStorageError("");
     setStorageMessage("");
+  }
+
+  function closeApiSetupDialog(): void {
+    setIsApiSetupDialogOpen(false);
   }
 
   async function startCodexLogin(): Promise<void> {
@@ -1937,6 +2004,10 @@ export function App() {
         } else {
           void loadAuthStatus();
         }
+        window.setTimeout(() => {
+          setIsCodexLoginOpen(false);
+          navigateToRoute("canvas");
+        }, 700);
         return;
       }
 
@@ -2617,8 +2688,19 @@ export function App() {
   }
 
   return (
-    <div className="app-root" data-canvas-theme={isCanvasDarkMode ? "dark" : "light"}>
+    <div className="app-root" data-canvas-theme={route !== "home" && isCanvasDarkMode ? "dark" : "light"}>
       <TopNavigation route={route} onNavigate={navigateToRoute} onPreloadGallery={preloadGalleryPage} />
+      {route === "home" ? (
+        <HomePage
+          authError={authError}
+          authStatus={authStatus}
+          isAuthLoading={isAuthLoading}
+          isCodexStarting={codexLoginStatus === "starting"}
+          onOpenApiSetup={() => setIsApiSetupDialogOpen(true)}
+          onOpenGallery={() => navigateToRoute("gallery")}
+          onStartCodexLogin={startCodexLogin}
+        />
+      ) : null}
       <main className="app-shell app-view relative flex min-h-0 overflow-hidden bg-neutral-950 text-neutral-900" data-active-route={route} hidden={route !== "canvas"}>
       <section
         className="relative min-w-0 flex-1 bg-neutral-100 outline-none"
@@ -3411,7 +3493,8 @@ export function App() {
         </div>
       ) : null}
 
-      {isCodexLoginOpen ? (
+      {isCodexLoginOpen ? createPortal(
+        (
         <div className="fixed inset-0 z-[3000] flex items-center justify-center bg-neutral-950/45 px-4 py-6" data-testid="codex-login-dialog">
           <div
             aria-labelledby="codex-login-title"
@@ -3483,8 +3566,11 @@ export function App() {
             </div>
           </div>
         </div>
+        ),
+        document.body
       ) : null}
       </main>
+      {isApiSetupDialogOpen ? <ApiSetupDialog onClose={closeApiSetupDialog} /> : null}
       {route === "gallery" ? (
         <Suspense
           fallback={

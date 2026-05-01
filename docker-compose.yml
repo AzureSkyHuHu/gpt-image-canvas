@@ -1,5 +1,6 @@
 services:
   app:
+    container_name: ${APP_CONTAINER_NAME:-gpt_image_canvas_app}
     build:
       context: .
       dockerfile: Dockerfile
@@ -9,8 +10,7 @@ services:
         APT_MIRROR: ${APT_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian}
         APT_SECURITY_MIRROR: ${APT_SECURITY_MIRROR:-http://mirrors.tuna.tsinghua.edu.cn/debian-security}
     env_file:
-      - path: .env
-        required: false
+      - .env
     environment:
       HOST: 0.0.0.0
       PORT: ${PORT:-8787}
@@ -21,3 +21,13 @@ services:
       - "${PORT:-8787}:${PORT:-8787}"
     volumes:
       - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: always
+    networks:
+      - infra
+
+networks:
+  infra:
+    external: true
+    name: ${APP_DOCKER_NETWORK:-dnmp-infra}

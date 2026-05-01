@@ -45,7 +45,7 @@ pnpm dev
 
 打开 `http://localhost:5173` 使用 Web 应用。
 
-接口调用和 token 管理说明见 [API 文档](docs/api.md)。
+接口调用和 token 管理说明见 [API 文档](docs/api.md)，公网 Docker 部署见 [部署文档](docs/deployment.zh-CN.md)。
 
 ## 升级到 v0.1.0
 

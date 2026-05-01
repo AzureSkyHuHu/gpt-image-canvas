@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-基于 tldraw、Hono、SQLite 和 GPT Image 2 构建的本地专业 AI 画布。`v0.1.1` 新增凭据感知首页、Codex 设备登录兜底，并保留腾讯云 COS 备份与 OpenAI 兼容图像响应支持。
+基于 tldraw、Hono、SQLite 和 GPT Image 2 构建的本地专业 AI 画布。`v0.2.0` 新增凭据感知首页、Codex 设备登录兜底，并保留腾讯云 COS 备份与 OpenAI 兼容图像响应支持。
 
 ## 效果图
 

@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2. Version `v0.1.1` adds a credential-aware homepage, Codex device login fallback, and the existing Tencent Cloud COS backup / OpenAI-compatible image response support.
+Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2. Version `v0.2.0` adds a credential-aware homepage, Codex device login fallback, and the existing Tencent Cloud COS backup / OpenAI-compatible image response support.
 
 ## Preview
 

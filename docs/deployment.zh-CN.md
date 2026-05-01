@@ -42,6 +42,7 @@ APP_SESSION_SECRET=replace-with-at-least-32-random-characters
 OPENAI_API_KEY=replace-with-upstream-api-key
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_IMAGE_MODEL=gpt-image-2
+APP_MAX_ASSETS_PER_TOKEN=100
 ```
 
 说明：
@@ -50,6 +51,7 @@ OPENAI_IMAGE_MODEL=gpt-image-2
 - `APP_ADMIN_PASSWORD` 用于登录管理员面板，创建和管理朋友访问 token。
 - `APP_SESSION_SECRET` 用于签名登录 Cookie，开启鉴权时至少 32 个字符。
 - `OPENAI_API_KEY` / `OPENAI_BASE_URL` 是未开启鉴权时的默认上游；开启鉴权后，图片生成优先使用当前访问 token 映射的上游 key、URL 和模型。
+- `APP_MAX_ASSETS_PER_TOKEN` 按访问 token 限制本地保存图片数量，达到上限后会提示用户先删除旧图片；设置为 `0` 可关闭限制。
 - `.env.example` 默认已经设置 `APP_AUTH_ENABLED=true`。如果只是本地单人开发，可以临时改成 `false`，但公网部署不要关闭。
 
 可以生成本地随机值：

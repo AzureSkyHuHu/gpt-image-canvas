@@ -66,6 +66,7 @@ import {
   runTextToImageGeneration
 } from "./image-generation.js";
 import {
+  countStoredAssets,
   deleteGalleryOutput,
   deleteGenerationRecord,
   getGenerationRecordAssetIds,
@@ -74,7 +75,7 @@ import {
   getProjectState,
   saveProjectSnapshot
 } from "./project-store.js";
-import { accessControlConfig, runtimePaths, serverConfig } from "./runtime.js";
+import { accessControlConfig, assetLimitConfig, runtimePaths, serverConfig } from "./runtime.js";
 import { getStorageConfig, saveStorageConfig, testStorageConfig } from "./storage-config.js";
 
 const MAX_PROJECT_SNAPSHOT_BYTES = 100 * 1024 * 1024;
@@ -421,6 +422,7 @@ app.put("/api/project", async (c) => {
 });
 
 app.post("/api/images/generate", async (c) => {
+  const owner = currentDataOwner(c);
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
@@ -431,6 +433,11 @@ app.post("/api/images/generate", async (c) => {
     return c.json(parsed.error, 400);
   }
 
+  const assetLimit = validateAssetLimit(owner, parsed.value.count);
+  if (!assetLimit.ok) {
+    return c.json(assetLimit.error, 429);
+  }
+
   const providerConfig = getRequestImageProviderConfig(c);
   if (!providerConfig.ok) {
     return providerErrorJson(c, providerConfig.error);
@@ -438,7 +445,7 @@ app.post("/api/images/generate", async (c) => {
 
   try {
     const provider = createOpenAIImageProvider(providerConfig.config);
-    return c.json(await runTextToImageGeneration(currentDataOwner(c), parsed.value, provider, c.req.raw.signal));
+    return c.json(await runTextToImageGeneration(owner, parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {
       return providerErrorJson(c, error);
@@ -449,14 +456,20 @@ app.post("/api/images/generate", async (c) => {
 });
 
 app.post("/api/images/edit", async (c) => {
+  const owner = currentDataOwner(c);
   const payload = await readJson(c.req.raw);
   if (!payload.ok) {
     return c.json(payload.error, 400);
   }
 
-  const parsed = parseEditPayload(currentDataOwner(c), payload.value);
+  const parsed = parseEditPayload(owner, payload.value);
   if (!parsed.ok) {
     return c.json(parsed.error, 400);
+  }
+
+  const assetLimit = validateAssetLimit(owner, parsed.value.count);
+  if (!assetLimit.ok) {
+    return c.json(assetLimit.error, 429);
   }
 
   const providerConfig = getRequestImageProviderConfig(c);
@@ -466,7 +479,7 @@ app.post("/api/images/edit", async (c) => {
 
   try {
     const provider = createOpenAIImageProvider(providerConfig.config);
-    return c.json(await runReferenceImageGeneration(currentDataOwner(c), parsed.value, provider, c.req.raw.signal));
+    return c.json(await runReferenceImageGeneration(owner, parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {
       return providerErrorJson(c, error);
@@ -620,6 +633,33 @@ function parseGeneratePayload(input: unknown): ParseResult<ImageProviderInput> {
   return {
     ok: true,
     value: base.value
+  };
+}
+
+function validateAssetLimit(owner: ReturnType<typeof currentDataOwner>, requestedCount: number): ParseResult<void> {
+  const maxAssets = assetLimitConfig.maxAssetsPerToken;
+  if (maxAssets === 0) {
+    return {
+      ok: true,
+      value: undefined
+    };
+  }
+
+  const currentCount = countStoredAssets(owner);
+  const remaining = Math.max(0, maxAssets - currentCount);
+  if (requestedCount <= remaining) {
+    return {
+      ok: true,
+      value: undefined
+    };
+  }
+
+  return {
+    ok: false,
+    error: errorResponse(
+      "asset_limit_exceeded",
+      `当前访问 token 已保存 ${currentCount} 张图片，最多允许 ${maxAssets} 张；本次请求需要 ${requestedCount} 张，剩余额度 ${remaining} 张。请先删除旧图片后再生成。`
+    )
   };
 }
 

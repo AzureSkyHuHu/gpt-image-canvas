@@ -72,6 +72,7 @@ import {
 
 const AUTOSAVE_DEBOUNCE_MS = 1200;
 const HISTORY_COLLAPSED_LIMIT = 3;
+const GENERATION_HISTORY_LIMIT = 100;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
 const MOBILE_DRAWER_MEDIA_QUERY = "(max-width: 1023px)";
 const ASSET_PREVIEW_WIDTHS = [256, 512, 1024, 2048] as const;
@@ -2245,7 +2246,9 @@ export function App() {
       placeholderSet
     });
     setActiveGenerationCount(activeGenerationsRef.current.size);
-    setGenerationHistory((history) => [temporaryRecord, ...history.filter((record) => record.id !== temporaryRecord.id)].slice(0, 20));
+    setGenerationHistory((history) =>
+      [temporaryRecord, ...history.filter((record) => record.id !== temporaryRecord.id)].slice(0, GENERATION_HISTORY_LIMIT)
+    );
 
     try {
       const referenceForRequest = requestMode === "reference" ? await resolveReference?.(controller.signal) : undefined;
@@ -2298,7 +2301,10 @@ export function App() {
       }
 
       setGenerationHistory((history) =>
-        [body.record, ...history.filter((record) => record.id !== temporaryRecord.id && record.id !== body.record.id)].slice(0, 20)
+        [body.record, ...history.filter((record) => record.id !== temporaryRecord.id && record.id !== body.record.id)].slice(
+          0,
+          GENERATION_HISTORY_LIMIT
+        )
       );
       const insertedCount = replaceGenerationPlaceholders(editor, placeholderSet, body.record);
       const failedCount =

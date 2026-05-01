@@ -64,6 +64,10 @@ export const serverConfig = {
   port: parsePort(process.env.PORT)
 };
 
+export const assetLimitConfig = {
+  maxAssetsPerToken: parseNonNegativeInteger(process.env.APP_MAX_ASSETS_PER_TOKEN, 100)
+};
+
 export const sqliteConfig = {
   journalMode: parseSqliteJournalMode(process.env.SQLITE_JOURNAL_MODE),
   lockingMode: parseSqliteLockingMode(process.env.SQLITE_LOCKING_MODE)
@@ -96,4 +100,9 @@ function parseBoolean(value: string | undefined): boolean {
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNonNegativeInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }

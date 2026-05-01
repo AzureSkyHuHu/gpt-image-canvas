@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray } from "drizzle-orm";
 import type {
   GeneratedAsset,
   GalleryImageItem,
@@ -16,6 +16,7 @@ import type { DataOwner } from "./data-owner.js";
 import { assets, generationOutputs, generationRecords, projects } from "./schema.js";
 
 export const DEFAULT_PROJECT_ID = "default";
+export const GENERATION_HISTORY_LIMIT = 100;
 const DEFAULT_PROJECT_NAME = "Default Project";
 const fallbackWarnings = new Set<string>();
 
@@ -173,6 +174,18 @@ export function getGenerationRecordAssetIds(owner: DataOwner, generationId: stri
   );
 }
 
+export function countStoredAssets(owner: DataOwner): number {
+  return (
+    db
+      .select({
+        value: count()
+      })
+      .from(assets)
+      .where(eq(assets.ownerTokenId, owner.id))
+      .get()?.value ?? 0
+  );
+}
+
 export function deleteGenerationRecord(owner: DataOwner, generationId: string): boolean {
   const result = db
     .delete(generationRecords)
@@ -247,7 +260,7 @@ function readGenerationHistory(owner: DataOwner): ApiGenerationRecord[] {
     .from(generationRecords)
     .where(eq(generationRecords.ownerTokenId, owner.id))
     .orderBy(desc(generationRecords.createdAt))
-    .limit(20)
+    .limit(GENERATION_HISTORY_LIMIT)
     .all();
   if (records.length === 0) {
     return [];

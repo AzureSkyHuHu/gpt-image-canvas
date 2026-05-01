@@ -1594,8 +1594,123 @@ function PanelStatusIcon({ tone }: { tone: PanelStatusTone }) {
   return <XCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />;
 }
 
+function providerStatusDetails(authStatus: AuthStatusResponse | null, isAuthLoading: boolean): {
+  copy: string;
+  provider: "openai" | "codex" | "loading" | "none";
+  title: string;
+} {
+  if (authStatus?.provider === "openai") {
+    return {
+      copy: "当前使用服务器配置的 OpenAI-compatible Images API。",
+      provider: "openai",
+      title: "OpenAI API"
+    };
+  }
+
+  if (authStatus?.provider === "codex") {
+    return {
+      copy: authStatus.codex.email ?? authStatus.codex.accountId ?? "Codex 会话可用。",
+      provider: "codex",
+      title: "Codex 已登录"
+    };
+  }
+
+  if (isAuthLoading) {
+    return {
+      copy: "正在检查本地凭据。",
+      provider: "loading",
+      title: "检查登录状态"
+    };
+  }
+
+  return {
+    copy: "未配置 API Key 时，可用 Codex 账号继续生成。",
+    provider: "none",
+    title: "需要登录 Codex"
+  };
+}
+
+function ProviderStatusPopover({
+  authError,
+  authStatus,
+  codexLoginStatus,
+  isAuthLoading,
+  onLogoutCodex,
+  onStartCodexLogin
+}: {
+  authError: string;
+  authStatus: AuthStatusResponse | null;
+  codexLoginStatus: CodexLoginStatus;
+  isAuthLoading: boolean;
+  onLogoutCodex: () => void;
+  onStartCodexLogin: () => void;
+}) {
+  const details = providerStatusDetails(authStatus, isAuthLoading);
+  const isCodexStarting = codexLoginStatus === "starting";
+
+  return (
+    <div className="provider-status-popover" data-provider={details.provider} data-testid="auth-provider-card">
+      <button
+        aria-label={`图像服务：${details.title}`}
+        className="provider-status-popover__trigger"
+        type="button"
+      >
+        {details.provider === "openai" || details.provider === "codex" ? (
+          <ShieldCheck className="size-4" aria-hidden="true" />
+        ) : details.provider === "loading" ? (
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+        ) : (
+          <KeyRound className="size-4" aria-hidden="true" />
+        )}
+      </button>
+
+      <div className="provider-status-popover__content">
+        <span className="control-label">图像服务</span>
+        <p className="provider-status-popover__title">{details.title}</p>
+        <p className="provider-status-popover__copy">{details.copy}</p>
+
+        {authError ? (
+          <p className="provider-status-popover__error" role="alert">
+            {authError}
+          </p>
+        ) : null}
+
+        {details.provider === "codex" ? (
+          <button
+            className="provider-status-popover__action"
+            type="button"
+            title="退出 Codex"
+            data-testid="codex-logout-button"
+            disabled={isAuthLoading}
+            onClick={onLogoutCodex}
+          >
+            <LogOut className="size-4" aria-hidden="true" />
+            退出 Codex
+          </button>
+        ) : details.provider === "openai" ? null : (
+          <button
+            className="provider-status-popover__action"
+            type="button"
+            data-testid="codex-login-button"
+            disabled={isAuthLoading || isCodexStarting}
+            onClick={onStartCodexLogin}
+          >
+            {isCodexStarting ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <KeyRound className="size-4" aria-hidden="true" />
+            )}
+            登录 Codex
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [route, setRoute] = useState<AppRoute>(() => routeFromLocation());
+  const shouldAutoOpenCanvasRef = useRef(route !== "gallery");
   const [generationMode, setGenerationMode] = useState<GenerationMode>("text");
   const [prompt, setPrompt] = useState("");
   const [stylePreset, setStylePreset] = useState<StylePresetId>("none");
@@ -1671,6 +1786,10 @@ export function App() {
   );
 
   const navigateToRoute = useCallback((nextRoute: AppRoute, options: { replace?: boolean } = {}): void => {
+    if (!options.replace) {
+      shouldAutoOpenCanvasRef.current = false;
+    }
+
     const nextPath = pathForRoute(nextRoute);
     if (window.location.pathname !== nextPath) {
       if (options.replace) {
@@ -1848,7 +1967,8 @@ export function App() {
       return;
     }
 
-    if (route === "home" && hasGenerationProvider) {
+    if (route === "home" && hasGenerationProvider && shouldAutoOpenCanvasRef.current) {
+      shouldAutoOpenCanvasRef.current = false;
       navigateToRoute("canvas", { replace: true });
       return;
     }
@@ -2775,6 +2895,14 @@ export function App() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              <ProviderStatusPopover
+                authError={authError}
+                authStatus={authStatus}
+                codexLoginStatus={codexLoginStatus}
+                isAuthLoading={isAuthLoading}
+                onLogoutCodex={logoutCodexSession}
+                onStartCodexLogin={startCodexLogin}
+              />
               <button
                 aria-label="云存储设置"
                 className={`inline-flex h-7 w-7 items-center justify-center rounded-md border text-xs transition focus:outline-none focus:ring-2 focus:ring-cyan-100 ${
@@ -2821,73 +2949,6 @@ export function App() {
               {saveError}
             </p>
           ) : null}
-
-          <section className="auth-provider-card" data-testid="auth-provider-card">
-            <div className="auth-provider-card__main">
-              <span className="auth-provider-card__icon" data-provider={authStatus?.provider ?? "loading"}>
-                {authStatus?.provider === "openai" ? (
-                  <ShieldCheck className="size-4" aria-hidden="true" />
-                ) : isAuthLoading ? (
-                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <KeyRound className="size-4" aria-hidden="true" />
-                )}
-              </span>
-              <div className="min-w-0">
-                <span className="control-label">图像服务</span>
-                <p className="auth-provider-card__title">
-                  {authStatus?.provider === "openai"
-                    ? "OpenAI API"
-                    : authStatus?.provider === "codex"
-                      ? "Codex 已登录"
-                      : isAuthLoading
-                        ? "检查登录状态"
-                        : "需要登录 Codex"}
-                </p>
-                <p className="auth-provider-card__copy">
-                  {authStatus?.provider === "openai"
-                    ? "当前使用服务器配置的 OpenAI-compatible Images API。"
-                    : authStatus?.codex.available
-                      ? authStatus.codex.email ?? authStatus.codex.accountId ?? "Codex 会话可用。"
-                      : "未配置 API Key 时，可用 Codex 账号继续生成。"}
-                </p>
-              </div>
-            </div>
-
-            {authStatus?.provider === "codex" ? (
-              <button
-                className="auth-provider-card__button"
-                type="button"
-                title="退出 Codex"
-                data-testid="codex-logout-button"
-                disabled={isAuthLoading}
-                onClick={logoutCodexSession}
-              >
-                <LogOut className="size-4" aria-hidden="true" />
-              </button>
-            ) : authStatus?.provider === "openai" ? null : (
-              <button
-                className="secondary-action auth-provider-card__login"
-                type="button"
-                data-testid="codex-login-button"
-                disabled={isAuthLoading || codexLoginStatus === "starting"}
-                onClick={startCodexLogin}
-              >
-                {codexLoginStatus === "starting" ? (
-                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <KeyRound className="size-4" aria-hidden="true" />
-                )}
-                登录 Codex
-              </button>
-            )}
-
-            {authError ? (
-              <p className="auth-provider-card__error" role="alert">
-                {authError}
-              </p>
-            ) : null}
-          </section>
 
           <div data-testid="generation-mode-control">
             <span className="control-label">模式</span>

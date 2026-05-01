@@ -2006,95 +2006,165 @@ a:focus-visible {
   color: var(--danger);
 }
 
-.auth-provider-card {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.75rem;
-  align-items: center;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: #fffaf2;
-  padding: 0.75rem;
-}
-
-.auth-provider-card__main {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.65rem;
-}
-
-.auth-provider-card__icon {
+.provider-status-popover {
+  position: relative;
   display: inline-flex;
-  width: 2rem;
-  height: 2rem;
-  flex: none;
+}
+
+.provider-status-popover__trigger {
+  display: inline-flex;
+  position: relative;
+  width: 1.75rem;
+  height: 1.75rem;
   align-items: center;
   justify-content: center;
   border: 1px solid #ead1bc;
   border-radius: 7px;
   background: #fff5e8;
   color: var(--accent-dark);
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease,
+    color 150ms ease,
+    transform 150ms ease;
 }
 
-.auth-provider-card__icon[data-provider="openai"],
-.auth-provider-card__icon[data-provider="codex"] {
+.provider-status-popover__trigger::after {
+  content: "";
+  position: absolute;
+  right: -0.15rem;
+  bottom: -0.15rem;
+  width: 0.48rem;
+  height: 0.48rem;
+  border: 2px solid var(--paper-panel);
+  border-radius: 9999px;
+  background: var(--warning);
+}
+
+.provider-status-popover[data-provider="openai"] .provider-status-popover__trigger,
+.provider-status-popover[data-provider="codex"] .provider-status-popover__trigger {
   border-color: #bfe7df;
   background: #eefbf7;
   color: #0f5f58;
 }
 
-.auth-provider-card__title {
-  margin: 0.1rem 0 0;
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 0.9rem;
-  font-weight: 850;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.provider-status-popover[data-provider="openai"] .provider-status-popover__trigger::after,
+.provider-status-popover[data-provider="codex"] .provider-status-popover__trigger::after {
+  background: var(--success);
 }
 
-.auth-provider-card__copy {
-  margin: 0.16rem 0 0;
+.provider-status-popover[data-provider="loading"] .provider-status-popover__trigger::after {
+  background: #d59b73;
+}
+
+.provider-status-popover__trigger:hover,
+.provider-status-popover:focus-within .provider-status-popover__trigger {
+  border-color: var(--line-strong);
+  background: #f9f1e5;
+  color: var(--ink);
+  transform: translateY(-1px);
+}
+
+.provider-status-popover__trigger:focus-visible {
+  outline: 2px solid rgb(15 118 110 / 0.28);
+  outline-offset: 2px;
+}
+
+.provider-status-popover__content {
+  position: absolute;
+  top: calc(100% + 0.55rem);
+  right: 0;
+  z-index: 90;
+  width: min(18.5rem, calc(100vw - 2rem));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper-panel);
+  box-shadow: 0 24px 60px rgb(51 36 24 / 0.2);
+  opacity: 0;
+  padding: 0.75rem;
+  pointer-events: none;
+  transform: translateY(-0.25rem);
+  visibility: hidden;
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease,
+    visibility 0s linear 150ms;
+}
+
+.provider-status-popover__content::before {
+  content: "";
+  position: absolute;
+  top: -0.45rem;
+  right: 0;
+  width: 4rem;
+  height: 0.55rem;
+}
+
+.provider-status-popover:hover .provider-status-popover__content,
+.provider-status-popover:focus-within .provider-status-popover__content {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.provider-status-popover__title {
+  margin: 0.1rem 0 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.provider-status-popover__copy {
+  margin: 0.18rem 0 0;
   color: var(--muted-ink);
-  font-size: 0.74rem;
+  font-size: 0.76rem;
   font-weight: 650;
-  line-height: 1.45;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
-.auth-provider-card__button {
+.provider-status-popover__action {
   display: inline-flex;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 100%;
+  min-height: 2.35rem;
   align-items: center;
   justify-content: center;
+  gap: 0.4rem;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: #fffdf8;
-  color: var(--muted-ink);
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 800;
+  line-height: 1;
+  margin-top: 0.65rem;
   transition:
     border-color 150ms ease,
     background-color 150ms ease,
     color 150ms ease;
 }
 
-.auth-provider-card__button:hover {
+.provider-status-popover__action:hover {
   border-color: var(--line-strong);
   background: #f9f1e5;
   color: var(--ink);
 }
 
-.auth-provider-card__login {
-  min-width: 7.5rem;
-  white-space: nowrap;
+.provider-status-popover__action:focus-visible {
+  outline: 2px solid rgb(15 118 110 / 0.28);
+  outline-offset: 2px;
 }
 
-.auth-provider-card__error {
-  grid-column: 1 / -1;
-  margin: 0;
+.provider-status-popover__action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.provider-status-popover__error {
+  margin: 0.55rem 0 0;
   border: 1px solid #f2b8ad;
   border-radius: 7px;
   background: #fff1ed;
@@ -2103,6 +2173,20 @@ a:focus-visible {
   font-weight: 650;
   line-height: 1.45;
   padding: 0.5rem 0.6rem;
+}
+
+@media (max-width: 1023px) {
+  .provider-status-popover__content {
+    right: auto;
+    left: 50%;
+    width: min(18.5rem, calc(var(--mobile-drawer-width) - 1.5rem));
+    transform: translate(-50%, -0.25rem);
+  }
+
+  .provider-status-popover:hover .provider-status-popover__content,
+  .provider-status-popover:focus-within .provider-status-popover__content {
+    transform: translate(-50%, 0);
+  }
 }
 
 .codex-login-dialog {
@@ -3113,7 +3197,7 @@ a:focus-visible {
   color: #fca5a5;
 }
 
-.app-root[data-canvas-theme="dark"] .auth-provider-card,
+.app-root[data-canvas-theme="dark"] .provider-status-popover__content,
 .app-root[data-canvas-theme="dark"] .codex-login-dialog,
 .app-root[data-canvas-theme="dark"] .codex-login-dialog__status,
 .app-root[data-canvas-theme="dark"] .codex-login-dialog__message {
@@ -3121,29 +3205,43 @@ a:focus-visible {
   background: #161210;
 }
 
-.app-root[data-canvas-theme="dark"] .auth-provider-card__icon,
-.app-root[data-canvas-theme="dark"] .auth-provider-card__button,
+.app-root[data-canvas-theme="dark"] .provider-status-popover__trigger,
+.app-root[data-canvas-theme="dark"] .provider-status-popover__action,
 .app-root[data-canvas-theme="dark"] .codex-device-code {
   border-color: rgb(198 95 50 / 0.36);
   background: rgb(126 50 26 / 0.22);
   color: #f7b267;
 }
 
-.app-root[data-canvas-theme="dark"] .auth-provider-card__icon[data-provider="openai"],
-.app-root[data-canvas-theme="dark"] .auth-provider-card__icon[data-provider="codex"],
+.app-root[data-canvas-theme="dark"] .provider-status-popover[data-provider="openai"] .provider-status-popover__trigger,
+.app-root[data-canvas-theme="dark"] .provider-status-popover[data-provider="codex"] .provider-status-popover__trigger,
 .app-root[data-canvas-theme="dark"] .codex-login-dialog__message--authorized {
   border-color: rgb(45 212 191 / 0.32);
   background: rgb(20 184 166 / 0.13);
   color: #99f6e4;
 }
 
-.app-root[data-canvas-theme="dark"] .auth-provider-card__button:hover {
+.app-root[data-canvas-theme="dark"] .provider-status-popover__trigger::after {
+  border-color: #161210;
+}
+
+.app-root[data-canvas-theme="dark"] .provider-status-popover__trigger:hover,
+.app-root[data-canvas-theme="dark"] .provider-status-popover:focus-within .provider-status-popover__trigger,
+.app-root[data-canvas-theme="dark"] .provider-status-popover__action:hover {
   border-color: var(--line-strong);
   background: #241d19;
   color: var(--ink);
 }
 
-.app-root[data-canvas-theme="dark"] .auth-provider-card__error,
+.app-root[data-canvas-theme="dark"] .provider-status-popover__title {
+  color: var(--ink);
+}
+
+.app-root[data-canvas-theme="dark"] .provider-status-popover__copy {
+  color: var(--muted-ink);
+}
+
+.app-root[data-canvas-theme="dark"] .provider-status-popover__error,
 .app-root[data-canvas-theme="dark"] .codex-login-dialog__message--error,
 .app-root[data-canvas-theme="dark"] .codex-login-dialog__message--expired,
 .app-root[data-canvas-theme="dark"] .codex-login-dialog__message--denied {

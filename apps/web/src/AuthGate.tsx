@@ -56,7 +56,13 @@ const SESSION_BAR_MARGIN = 8;
 const SESSION_BAR_DRAG_THRESHOLD = 4;
 
 export function AuthGate({ children }: AuthGateProps) {
-  const [authStatus, setAuthStatus] = useState<AuthStatus>(() => (hasSessionHint() ? "ready" : "loading"));
+  const [authStatus, setAuthStatus] = useState<AuthStatus>(() => {
+    const hinted = hasSessionHint();
+    if (hinted && window.location.pathname === "/") {
+      window.history.replaceState(null, "", "/canvas");
+    }
+    return hinted ? "ready" : "loading";
+  });
   const [authEnabled, setAuthEnabled] = useState(false);
   const [userLabel, setUserLabel] = useState("");
   const [tokenInput, setTokenInput] = useState("");

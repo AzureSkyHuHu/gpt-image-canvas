@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2. Version `v0.1.0` adds Tencent Cloud COS backup, PackyCode / `gpt-image` response compatibility, and workflow polish for generated assets.
+Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2. Version `v0.2.0` adds a credential-aware homepage, Codex device login fallback, and the existing Tencent Cloud COS backup / OpenAI-compatible image response support.
 
 ## Preview
 
@@ -15,13 +15,14 @@ Local professional AI canvas built with tldraw, Hono, SQLite, and GPT Image 2. V
 - Optional Tencent Cloud COS backup for newly generated images.
 - Generation history with locate, rerun, download, and cloud upload status.
 - OpenAI-compatible image endpoint support, including PackyCode / `gpt-image` style responses.
+- Credential-aware routes with a premium homepage, API-key priority, and optional Codex login when no API key is configured.
 
 ## Requirements
 
 - Node.js 22 or newer.
 - pnpm 9.14.2. The package manager is pinned in `package.json`; Corepack can activate it with `corepack prepare pnpm@9.14.2 --activate`.
 - Docker Desktop or a compatible Docker Engine for the Docker workflow.
-- An OpenAI API key with access to `gpt-image-2` for live generation. The app can boot without credentials, but generation requests will return a runtime missing-key error.
+- An OpenAI API key with access to `gpt-image-2`, or a Codex login completed from the app, for live generation. The app can boot without credentials and will show the homepage until a provider is available.
 
 ## Quick Start
 
@@ -43,9 +44,18 @@ cp .env.example .env
 pnpm dev
 ```
 
-Authentication is enabled by default. Set `OPENAI_API_KEY` in `.env` before live generation, or bind an upstream key to an access token from the admin panel. The app uses the official OpenAI Image API with `gpt-image-2` by default. To route requests through an OpenAI-compatible endpoint, set `OPENAI_BASE_URL` in `.env`; to use a different compatible image model, set `OPENAI_IMAGE_MODEL`.
+Authentication is enabled by default. Public deployments should require access-token login and bind an upstream API key to each access token from the admin panel. The app uses the official OpenAI Image API with `gpt-image-2` by default. To route requests through an OpenAI-compatible endpoint, set `OPENAI_BASE_URL` in `.env`; to use a different compatible image model, set `OPENAI_IMAGE_MODEL`.
 
 Open the web app at `http://localhost:5173`.
+
+## Authentication And Routes
+
+- When `APP_AUTH_ENABLED=true`, access-token login remains the application access model. Each token has isolated project, Gallery, COS settings, generation history, and asset quota.
+- Access-token users generate only with the upstream API key bound to their token. They do not use Codex fallback.
+- Admin/local use can log in to Codex as a global fallback provider. Admin login opens the local workspace (`Admin local`) and does not grant ordinary access-token users Codex fallback. In local single-user mode (`APP_AUTH_ENABLED=false`), provider priority is `OPENAI_API_KEY` then Codex session then `missing_provider`.
+- `/` is the credential-aware homepage for local/no-provider states, `/canvas` is the working canvas, and `/gallery` remains available after access is allowed.
+- The `接入 API` modal is instructional only. It explains `.env` setup and never stores, submits, or echoes an API key in the browser.
+- The `Codex 登录` modal starts Codex device login, displays the verification URL and user code, and stores resulting OAuth token material only on the local API side.
 
 For API calls and token management, see [API docs](docs/api.md). For public Docker deployment notes, see [deployment docs](docs/deployment.zh-CN.md).
 
@@ -101,6 +111,14 @@ pnpm typecheck
 pnpm build
 ```
 
+If the host Node.js version is too old for Vite or optional native packages were installed for a different environment, run the build inside the local Docker Node image instead:
+
+```sh
+docker run --rm -v "$PWD":/workspace -w /workspace node:24-bookworm-slim bash -lc 'corepack enable && corepack prepare pnpm@9.14.2 --activate && pnpm install --force && pnpm build'
+```
+
+Use this as a verification fallback only; keep generated build output and `node_modules` out of commits.
+
 ## Scripts
 
 - `pnpm dev` starts both workspace development workflows.
@@ -151,7 +169,7 @@ macOS/Linux:
 NODE_IMAGE=node:22-bookworm-slim docker compose up --build
 ```
 
-`OPENAI_API_KEY` may be left empty for local boot checks. The app still starts, and generation endpoints return a missing-key JSON error until credentials are configured.
+`OPENAI_API_KEY` may be left empty for local boot checks or Codex-login based generation. The app still starts; without an API key or valid Codex session, generation endpoints return a `missing_provider` JSON error and the browser opens on the homepage.
 
 ## Tencent Cloud COS Backup
 
@@ -175,7 +193,7 @@ Cloud upload failures do not fail image generation. The asset remains available 
 
 Runtime state is stored under `DATA_DIR`, which defaults to `./data` locally and `/app/data` in Docker. The directory contains:
 
-- `gpt-image-canvas.sqlite` for the default project, generation history, asset metadata, cloud upload metadata, and optional COS settings.
+- `gpt-image-canvas.sqlite` for the default project, generation history, asset metadata, cloud upload metadata, optional COS settings, and Codex OAuth token records.
 - `assets/` for generated image files.
 
 The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so projects and generated assets survive container rebuilds. Do not commit `.env`, `data/`, generated images, SQLite files, or build output.
@@ -183,6 +201,7 @@ The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so project
 ## Security / Privacy Notes
 
 - Secrets are read only from `.env` or runtime environment variables. Never commit `.env`, expanded Docker Compose config output, shell history containing keys, or logs that include secret values.
+- Codex OAuth access tokens, refresh tokens, ID tokens, email, account ID, expiry, and refresh timestamps are stored in local SQLite under `DATA_DIR`. Treat the SQLite database as sensitive runtime data after Codex login.
 - COS SecretKey values saved from the UI are stored locally in SQLite and are masked by the settings API. Treat `data/gpt-image-canvas.sqlite` as sensitive when COS is configured.
 - Prompts, project state, generated assets, and SQLite data are local runtime data under `DATA_DIR`. Treat `data/` as private unless you intentionally export specific assets.
 - Before publishing a branch, check `git status --short` and confirm only source, docs, and intended metadata are staged. `.env`, `.ralph/`, `.codex-temp/`, `data/`, generated images, SQLite databases, and build output should stay untracked.
@@ -190,7 +209,8 @@ The Docker Compose workflow bind-mounts host `./data` to `/app/data`, so project
 
 ## Troubleshooting
 
-- Missing or empty `OPENAI_API_KEY`: the app still boots; text-to-image and reference-image requests return a missing-key JSON error. Add a valid key to `.env` and restart the API or Docker container.
+- Missing or empty `OPENAI_API_KEY`: the app still boots. If no Codex session is available, `/` shows the homepage and text-to-image / reference-image requests return `missing_provider`. Add a valid key to `.env` and restart the API or Docker container, or use the `Codex 登录` flow from the homepage.
+- Codex login cannot complete: confirm the machine can reach `https://auth.openai.com`, keep the device-login dialog open until authorization finishes, and restart the flow if the user code expires. Do not paste or log token values.
 - Custom provider endpoint: set `OPENAI_BASE_URL` in `.env`, for example `https://api.example.com/v1`, then restart the API or Docker container. The endpoint must be OpenAI-compatible and support the configured image model.
 - Missing model access: confirm the OpenAI organization and project used by `OPENAI_API_KEY` can access the configured image model. Set `OPENAI_IMAGE_MODEL` if your compatible endpoint expects a different model name.
 - High-resolution generation timeouts: upstream image requests default to 20 minutes; increase `OPENAI_IMAGE_TIMEOUT_MS` in `.env` if needed.

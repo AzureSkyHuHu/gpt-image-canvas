@@ -203,6 +203,7 @@ export function AuthGate({ children }: AuthGateProps) {
       setAdminPassword("");
       setAdminStatus("authenticated");
       await refreshTokens();
+      await refreshAuth();
     } catch (error) {
       setAdminError(error instanceof Error ? error.message : "管理员登录失败。");
     } finally {
@@ -218,6 +219,7 @@ export function AuthGate({ children }: AuthGateProps) {
     setAdminStatus("guest");
     setTokens([]);
     resetTokenForm();
+    await refreshAuth();
   }
 
   async function submitTokenForm(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -501,6 +503,9 @@ export function AuthGate({ children }: AuthGateProps) {
                     退出管理员
                   </button>
                 </div>
+                <p className="auth-token-list__empty">
+                  管理员已可进入本机工作区，Codex 登录只会作为管理员/本机的全局生成服务兜底，普通访问 token 用户不会使用 Codex。
+                </p>
 
                 {createdToken ? (
                   <div className="auth-created-token">

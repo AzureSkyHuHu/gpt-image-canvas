@@ -79,7 +79,7 @@ export function authMiddleware(): MiddlewareHandler<{ Variables: AuthVariables }
       return next();
     }
 
-    if (path.startsWith("/api/") && !auth.user) {
+    if (path.startsWith("/api/") && !auth.user && !auth.isAdmin) {
       return c.json(errorResponse("auth_required", "请输入访问 token 后继续。"), 401);
     }
 
@@ -91,8 +91,8 @@ export function authMe(c: Context<{ Variables: AuthVariables }>): AuthMeResponse
   const auth = c.get("auth");
   return {
     authEnabled: isAuthEnabled(),
-    authenticated: Boolean(auth?.user),
-    user: auth?.user ? toAuthUser(auth.user) : undefined
+    authenticated: Boolean(auth?.user || auth?.isAdmin),
+    user: auth?.user ? toAuthUser(auth.user) : auth?.isAdmin ? { id: "local", label: "Admin local" } : undefined
   };
 }
 

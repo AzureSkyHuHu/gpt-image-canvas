@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.2.0 - 2026-05-01
+
+Credential-aware homepage and Codex login release.
+
+### Added
+
+- Homepage for first-run and missing-provider states, with entry points for Codex login and API setup.
+- Codex device-login flow, auth status API, logout API, and local OAuth token persistence.
+- Codex image provider fallback through the Responses image flow when `OPENAI_API_KEY` is not configured.
+- Provider status controls in the canvas shell for viewing OpenAI/Codex availability and starting or ending a Codex session.
+
+### Changed
+
+- `/` now routes by credential state: valid OpenAI API key or Codex session opens the canvas, otherwise the homepage is shown.
+- Image generation provider selection now prioritizes `OPENAI_API_KEY` and falls back to Codex only when no API key is configured.
+- Documentation and `.env.example` now cover Codex login, provider priority, and token storage expectations.
+
 ## v0.1.1 - 2026-04-30
 
 Gallery and interface refresh release.

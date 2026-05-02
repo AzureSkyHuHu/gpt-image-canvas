@@ -5,10 +5,14 @@ import {
   Cloud,
   Copy,
   Download,
+  ExternalLink,
   ImageIcon,
+  KeyRound,
   Loader2,
+  LogOut,
   MapPin,
   RotateCcw,
+  ShieldCheck,
   Sparkles,
   Square,
   Trash2,
@@ -16,6 +20,7 @@ import {
   XCircle
 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Tldraw,
   type Editor,
@@ -39,6 +44,7 @@ import {
   GenerationPlaceholderShapeUtil,
   type GenerationPlaceholderShape
 } from "./GenerationPlaceholderShape";
+import { ApiSetupDialog, HomePage } from "./HomePage";
 import {
   CUSTOM_SIZE_PRESET_ID,
   GENERATION_COUNTS,
@@ -50,7 +56,11 @@ import {
   STYLE_PRESETS,
   resolutionTierForSize,
   validateImageSize,
+  type AuthStatusResponse,
   type AssetMetadataResponse,
+  type CodexDevicePollResponse,
+  type CodexDeviceStartResponse,
+  type CodexLogoutResponse,
   type GalleryImageItem,
   type GenerationCount,
   type GenerationRecord,
@@ -151,10 +161,11 @@ function preloadGalleryPage(): void {
 }
 
 type PersistedSnapshot = TLEditorSnapshot | TLStoreSnapshot;
-type AppRoute = "canvas" | "gallery";
+type AppRoute = "home" | "canvas" | "gallery";
 type SaveStatus = "loading" | "saved" | "pending" | "saving" | "error";
 type GenerationMode = "text" | "reference";
 type PanelStatusTone = "progress" | "success" | "warning" | "error";
+type CodexLoginStatus = "idle" | "starting" | "pending" | "authorized" | "expired" | "denied" | "error";
 
 interface PanelStatus {
   tone: PanelStatusTone;
@@ -328,10 +339,18 @@ function generationValidationMessage(promptValue: string, widthValue: number, he
 }
 
 function routeFromLocation(): AppRoute {
-  return window.location.pathname === "/gallery" ? "gallery" : "canvas";
+  if (window.location.pathname === "/canvas") {
+    return "canvas";
+  }
+
+  return window.location.pathname === "/gallery" ? "gallery" : "home";
 }
 
 function pathForRoute(route: AppRoute): string {
+  if (route === "canvas") {
+    return "/canvas";
+  }
+
   return route === "gallery" ? "/gallery" : "/";
 }
 
@@ -532,6 +551,18 @@ function formatCreatedTime(value: string): string {
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
+function formatCodexExpiry(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "15 分钟后";
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
     minute: "2-digit"
   }).format(date);
@@ -1613,11 +1644,25 @@ function TopNavigation({
         </div>
         <nav aria-label="主要页面" className="top-navigation__links">
           <a
+            aria-current={route === "home" ? "page" : undefined}
+            className="top-navigation__link"
+            data-active={route === "home"}
+            data-testid="nav-home"
+            href="/"
+            onClick={(event) => {
+              event.preventDefault();
+              onNavigate("home");
+            }}
+          >
+            <Sparkles className="size-4" aria-hidden="true" />
+            首页
+          </a>
+          <a
             aria-current={route === "canvas" ? "page" : undefined}
             className="top-navigation__link"
             data-active={route === "canvas"}
             data-testid="nav-canvas"
-            href="/"
+            href="/canvas"
             onClick={(event) => {
               event.preventDefault();
               onNavigate("canvas");
@@ -1674,8 +1719,123 @@ function PanelStatusIcon({ tone }: { tone: PanelStatusTone }) {
   return <XCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />;
 }
 
+function providerStatusDetails(authStatus: AuthStatusResponse | null, isAuthLoading: boolean): {
+  copy: string;
+  provider: "openai" | "codex" | "loading" | "none";
+  title: string;
+} {
+  if (authStatus?.provider === "openai") {
+    return {
+      copy: "当前使用服务器配置的 OpenAI-compatible Images API。",
+      provider: "openai",
+      title: "OpenAI API"
+    };
+  }
+
+  if (authStatus?.provider === "codex") {
+    return {
+      copy: authStatus.codex.email ?? authStatus.codex.accountId ?? "Codex 会话可用。",
+      provider: "codex",
+      title: "Codex 已登录"
+    };
+  }
+
+  if (isAuthLoading) {
+    return {
+      copy: "正在检查本地凭据。",
+      provider: "loading",
+      title: "检查登录状态"
+    };
+  }
+
+  return {
+    copy: "未配置 API Key 时，可用 Codex 账号继续生成。",
+    provider: "none",
+    title: "需要登录 Codex"
+  };
+}
+
+function ProviderStatusPopover({
+  authError,
+  authStatus,
+  codexLoginStatus,
+  isAuthLoading,
+  onLogoutCodex,
+  onStartCodexLogin
+}: {
+  authError: string;
+  authStatus: AuthStatusResponse | null;
+  codexLoginStatus: CodexLoginStatus;
+  isAuthLoading: boolean;
+  onLogoutCodex: () => void;
+  onStartCodexLogin: () => void;
+}) {
+  const details = providerStatusDetails(authStatus, isAuthLoading);
+  const isCodexStarting = codexLoginStatus === "starting";
+
+  return (
+    <div className="provider-status-popover" data-provider={details.provider} data-testid="auth-provider-card">
+      <button
+        aria-label={`图像服务：${details.title}`}
+        className="provider-status-popover__trigger"
+        type="button"
+      >
+        {details.provider === "openai" || details.provider === "codex" ? (
+          <ShieldCheck className="size-4" aria-hidden="true" />
+        ) : details.provider === "loading" ? (
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+        ) : (
+          <KeyRound className="size-4" aria-hidden="true" />
+        )}
+      </button>
+
+      <div className="provider-status-popover__content">
+        <span className="control-label">图像服务</span>
+        <p className="provider-status-popover__title">{details.title}</p>
+        <p className="provider-status-popover__copy">{details.copy}</p>
+
+        {authError ? (
+          <p className="provider-status-popover__error" role="alert">
+            {authError}
+          </p>
+        ) : null}
+
+        {details.provider === "codex" ? (
+          <button
+            className="provider-status-popover__action"
+            type="button"
+            title="退出 Codex"
+            data-testid="codex-logout-button"
+            disabled={isAuthLoading}
+            onClick={onLogoutCodex}
+          >
+            <LogOut className="size-4" aria-hidden="true" />
+            退出 Codex
+          </button>
+        ) : details.provider === "openai" ? null : (
+          <button
+            className="provider-status-popover__action"
+            type="button"
+            data-testid="codex-login-button"
+            disabled={isAuthLoading || isCodexStarting}
+            onClick={onStartCodexLogin}
+          >
+            {isCodexStarting ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <KeyRound className="size-4" aria-hidden="true" />
+            )}
+            登录 Codex
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [route, setRoute] = useState<AppRoute>(() => routeFromLocation());
+  const shouldAutoOpenCanvasRef = useRef(route !== "gallery");
   const [generationMode, setGenerationMode] = useState<GenerationMode>("text");
   const [prompt, setPrompt] = useState("");
   const [stylePreset, setStylePreset] = useState<StylePresetId>("none");
@@ -1700,7 +1860,15 @@ export function App() {
   const [isMobileDrawer, setIsMobileDrawer] = useState(false);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [isStorageDialogOpen, setIsStorageDialogOpen] = useState(false);
+  const [isApiSetupDialogOpen, setIsApiSetupDialogOpen] = useState(false);
   const [storageConfig, setStorageConfig] = useState<StorageConfigResponse | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
+  const [isCodexLoginOpen, setIsCodexLoginOpen] = useState(false);
+  const [codexDevice, setCodexDevice] = useState<CodexDeviceStartResponse | null>(null);
+  const [codexLoginStatus, setCodexLoginStatus] = useState<CodexLoginStatus>("idle");
+  const [codexLoginMessage, setCodexLoginMessage] = useState("");
   const [storageForm, setStorageForm] = useState<StorageConfigFormState>(defaultStorageConfigForm);
   const [storageSecretTouched, setStorageSecretTouched] = useState(false);
   const [storageError, setStorageError] = useState("");
@@ -1716,8 +1884,10 @@ export function App() {
   const activeGenerationsRef = useRef<Map<number, ActiveGenerationTask>>(new Map());
   const generationRequestRef = useRef(0);
   const saveTimerRef = useRef<number | undefined>();
+  const codexPollTimerRef = useRef<number | undefined>();
   const saveRequestRef = useRef(0);
   const isGenerating = activeGenerationCount > 0;
+  const hasGenerationProvider = authStatus?.provider === "openai" || authStatus?.provider === "codex";
 
   const saveProjectSnapshotNow = useCallback(async (editor: Editor): Promise<void> => {
     const requestId = saveRequestRef.current + 1;
@@ -1774,10 +1944,18 @@ export function App() {
     []
   );
 
-  const navigateToRoute = useCallback((nextRoute: AppRoute): void => {
+  const navigateToRoute = useCallback((nextRoute: AppRoute, options: { replace?: boolean } = {}): void => {
+    if (!options.replace) {
+      shouldAutoOpenCanvasRef.current = false;
+    }
+
     const nextPath = pathForRoute(nextRoute);
     if (window.location.pathname !== nextPath) {
-      window.history.pushState(null, "", nextPath);
+      if (options.replace) {
+        window.history.replaceState(null, "", nextPath);
+      } else {
+        window.history.pushState(null, "", nextPath);
+      }
     }
     setRoute(nextRoute);
   }, []);
@@ -1789,6 +1967,33 @@ export function App() {
   const hiddenHistoryCount = Math.max(0, generationHistory.length - HISTORY_COLLAPSED_LIMIT);
   const hasAdditionalHistory = hiddenHistoryCount > 0;
   const isExtendedCountSelected = EXTENDED_GENERATION_COUNTS.includes(count);
+  const loadAuthStatus = useCallback(async (signal?: AbortSignal): Promise<AuthStatusResponse | null> => {
+    setIsAuthLoading(true);
+    setAuthError("");
+
+    try {
+      const response = await fetch("/api/auth/status", { signal });
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const status = (await response.json()) as AuthStatusResponse;
+      setAuthStatus(status);
+      return status;
+    } catch (error) {
+      if (signal?.aborted) {
+        return null;
+      }
+
+      setAuthError(error instanceof Error ? error.message : "无法读取图像服务登录状态。");
+      return null;
+    } finally {
+      if (!signal?.aborted) {
+        setIsAuthLoading(false);
+      }
+    }
+  }, []);
+
   const panelStatus = useMemo<PanelStatus | null>(() => {
     if (isGenerating) {
       return {
@@ -1858,6 +2063,7 @@ export function App() {
         task.controller.abort();
       }
       activeGenerationsRef.current.clear();
+      window.clearTimeout(codexPollTimerRef.current);
     };
   }, []);
 
@@ -1908,6 +2114,32 @@ export function App() {
   useEffect(() => {
     const controller = new AbortController();
 
+    void loadAuthStatus(controller.signal);
+
+    return () => {
+      controller.abort();
+    };
+  }, [loadAuthStatus]);
+
+  useEffect(() => {
+    if (isAuthLoading || !authStatus || route === "gallery") {
+      return;
+    }
+
+    if (route === "home" && hasGenerationProvider && shouldAutoOpenCanvasRef.current) {
+      shouldAutoOpenCanvasRef.current = false;
+      navigateToRoute("canvas", { replace: true });
+      return;
+    }
+
+    if (route === "canvas" && !hasGenerationProvider) {
+      navigateToRoute("home", { replace: true });
+    }
+  }, [authStatus, hasGenerationProvider, isAuthLoading, navigateToRoute, route]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
     async function loadStorageConfig(): Promise<void> {
       try {
         const response = await fetch("/api/storage/config", {
@@ -1953,6 +2185,24 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isApiSetupDialogOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setIsApiSetupDialogOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isApiSetupDialogOpen]);
+
   const closeAiPanel = useCallback((): void => {
     setIsAiPanelOpen(false);
     window.requestAnimationFrame(() => {
@@ -1972,6 +2222,135 @@ export function App() {
     setIsStorageDialogOpen(false);
     setStorageError("");
     setStorageMessage("");
+  }
+
+  function closeApiSetupDialog(): void {
+    setIsApiSetupDialogOpen(false);
+  }
+
+  async function startCodexLogin(): Promise<void> {
+    window.clearTimeout(codexPollTimerRef.current);
+    setIsCodexLoginOpen(true);
+    setCodexDevice(null);
+    setCodexLoginStatus("starting");
+    setCodexLoginMessage("");
+    setAuthError("");
+
+    try {
+      const response = await fetch("/api/auth/codex/device/start", {
+        method: "POST"
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const device = (await response.json()) as CodexDeviceStartResponse;
+      setCodexDevice(device);
+      setCodexLoginStatus("pending");
+      setCodexLoginMessage("等待浏览器授权完成。");
+      scheduleCodexPoll(device, device.interval);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Codex 登录无法启动。";
+      setCodexLoginStatus("error");
+      setCodexLoginMessage(message);
+      setAuthError(message);
+    }
+  }
+
+  async function pollCodexLogin(device: CodexDeviceStartResponse): Promise<void> {
+    try {
+      const response = await fetch("/api/auth/codex/device/poll", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          deviceAuthId: device.deviceAuthId,
+          userCode: device.userCode
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const result = (await response.json()) as CodexDevicePollResponse;
+      if (result.status === "authorized") {
+        setCodexLoginStatus("authorized");
+        setCodexLoginMessage("Codex 已登录。");
+        if (result.auth) {
+          setAuthStatus(result.auth);
+        } else {
+          void loadAuthStatus();
+        }
+        window.setTimeout(() => {
+          setIsCodexLoginOpen(false);
+          navigateToRoute("canvas");
+        }, 700);
+        return;
+      }
+
+      if (result.status === "pending") {
+        setCodexLoginStatus("pending");
+        scheduleCodexPoll(device, result.interval ?? device.interval);
+        return;
+      }
+
+      setCodexLoginStatus(result.status);
+      setCodexLoginMessage(result.message ?? "Codex 登录未完成，请重新开始。");
+      void loadAuthStatus();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Codex 登录轮询失败。";
+      setCodexLoginStatus("error");
+      setCodexLoginMessage(message);
+      setAuthError(message);
+    }
+  }
+
+  function scheduleCodexPoll(device: CodexDeviceStartResponse, intervalSeconds: number): void {
+    window.clearTimeout(codexPollTimerRef.current);
+    const delay = Math.max(1, intervalSeconds) * 1000;
+    codexPollTimerRef.current = window.setTimeout(() => {
+      void pollCodexLogin(device);
+    }, delay);
+  }
+
+  function closeCodexLoginDialog(): void {
+    window.clearTimeout(codexPollTimerRef.current);
+    setIsCodexLoginOpen(false);
+  }
+
+  async function logoutCodexSession(): Promise<void> {
+    window.clearTimeout(codexPollTimerRef.current);
+    setIsAuthLoading(true);
+    setAuthError("");
+
+    try {
+      const response = await fetch("/api/auth/codex/logout", {
+        method: "POST"
+      });
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response));
+      }
+
+      const result = (await response.json()) as CodexLogoutResponse;
+      setAuthStatus(result.auth);
+      setCodexDevice(null);
+      setCodexLoginStatus("idle");
+      setCodexLoginMessage("");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Codex 登出失败。");
+    } finally {
+      setIsAuthLoading(false);
+    }
+  }
+
+  async function copyCodexUserCode(): Promise<void> {
+    if (!codexDevice) {
+      return;
+    }
+
+    await writeClipboardText(codexDevice.userCode).catch(() => undefined);
   }
 
   function updateStorageForm(patch: Partial<StorageConfigFormState>): void {
@@ -2621,8 +3000,19 @@ export function App() {
   }
 
   return (
-    <div className="app-root" data-canvas-theme={isCanvasDarkMode ? "dark" : "light"}>
+    <div className="app-root" data-canvas-theme={route !== "home" && isCanvasDarkMode ? "dark" : "light"}>
       <TopNavigation route={route} onNavigate={navigateToRoute} onPreloadGallery={preloadGalleryPage} />
+      {route === "home" ? (
+        <HomePage
+          authError={authError}
+          authStatus={authStatus}
+          isAuthLoading={isAuthLoading}
+          isCodexStarting={codexLoginStatus === "starting"}
+          onOpenApiSetup={() => setIsApiSetupDialogOpen(true)}
+          onOpenGallery={() => navigateToRoute("gallery")}
+          onStartCodexLogin={startCodexLogin}
+        />
+      ) : null}
       <main className="app-shell app-view relative flex min-h-0 overflow-hidden bg-neutral-950 text-neutral-900" data-active-route={route} hidden={route !== "canvas"}>
       <section
         className="relative min-w-0 flex-1 bg-neutral-100 outline-none"
@@ -2697,6 +3087,14 @@ export function App() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              <ProviderStatusPopover
+                authError={authError}
+                authStatus={authStatus}
+                codexLoginStatus={codexLoginStatus}
+                isAuthLoading={isAuthLoading}
+                onLogoutCodex={logoutCodexSession}
+                onStartCodexLogin={startCodexLogin}
+              />
               <button
                 aria-label="云存储设置"
                 className={`inline-flex h-7 w-7 items-center justify-center rounded-md border text-xs transition focus:outline-none focus:ring-2 focus:ring-cyan-100 ${
@@ -3366,7 +3764,85 @@ export function App() {
           onConfirm={() => void deleteHistoryRecord(pendingDeleteHistoryRecord)}
         />
       ) : null}
+
+      {isCodexLoginOpen ? createPortal(
+        (
+        <div className="fixed inset-0 z-[3000] flex items-center justify-center bg-neutral-950/45 px-4 py-6" data-testid="codex-login-dialog">
+          <div
+            aria-labelledby="codex-login-title"
+            aria-modal="true"
+            className="codex-login-dialog"
+            role="dialog"
+          >
+            <div className="codex-login-dialog__header">
+              <div className="min-w-0">
+                <h2 id="codex-login-title">登录 Codex</h2>
+                <p>使用 Codex 账号授权本地生成服务。</p>
+              </div>
+              <button
+                aria-label="关闭 Codex 登录"
+                className="history-icon-action"
+                type="button"
+                onClick={closeCodexLoginDialog}
+              >
+                <X className="size-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="codex-login-dialog__body">
+              {codexLoginStatus === "starting" ? (
+                <div className="codex-login-dialog__status" role="status">
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  正在创建登录码...
+                </div>
+              ) : null}
+
+              {codexDevice ? (
+                <>
+                  <div className="codex-device-code" data-testid="codex-user-code">
+                    {codexDevice.userCode}
+                  </div>
+                  <div className="codex-login-dialog__actions">
+                    <a className="primary-action h-10" href={codexDevice.verificationUrl} target="_blank" rel="noreferrer">
+                      <ExternalLink className="size-4" aria-hidden="true" />
+                      打开登录页
+                    </a>
+                    <button className="secondary-action h-10" type="button" onClick={() => void copyCodexUserCode()}>
+                      <Copy className="size-4" aria-hidden="true" />
+                      复制代码
+                    </button>
+                  </div>
+                  <p className="codex-login-dialog__hint">
+                    代码将在 {formatCodexExpiry(codexDevice.expiresAt)} 过期。
+                  </p>
+                </>
+              ) : null}
+
+              {codexLoginMessage ? (
+                <p
+                  className={`codex-login-dialog__message codex-login-dialog__message--${codexLoginStatus}`}
+                  data-testid="codex-login-message"
+                  role={codexLoginStatus === "pending" || codexLoginStatus === "authorized" ? "status" : "alert"}
+                >
+                  {codexLoginStatus === "pending" ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : null}
+                  {codexLoginMessage}
+                </p>
+              ) : null}
+
+              {codexLoginStatus === "expired" || codexLoginStatus === "denied" || codexLoginStatus === "error" ? (
+                <button className="secondary-action h-10" type="button" onClick={() => void startCodexLogin()}>
+                  <KeyRound className="size-4" aria-hidden="true" />
+                  重新开始
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+        ),
+        document.body
+      ) : null}
       </main>
+      {isApiSetupDialogOpen ? <ApiSetupDialog onClose={closeApiSetupDialog} /> : null}
       {route === "gallery" ? (
         <Suspense
           fallback={

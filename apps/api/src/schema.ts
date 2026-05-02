@@ -58,6 +58,21 @@ export const accessTokens = sqliteTable("access_tokens", {
   updatedAt: text("updated_at").notNull()
 });
 
+export const codexOAuthTokens = sqliteTable("codex_oauth_tokens", {
+  id: text("id").primaryKey(),
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  idToken: text("id_token"),
+  email: text("email"),
+  accountId: text("account_id"),
+  expiresAt: text("expires_at"),
+  refreshedAt: text("refreshed_at"),
+  unavailableAt: text("unavailable_at"),
+  unavailableReason: text("unavailable_reason"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+});
+
 export const generationRecords = sqliteTable("generation_records", {
   id: text("id").primaryKey(),
   ownerTokenId: text("owner_token_id").notNull().default("local"),

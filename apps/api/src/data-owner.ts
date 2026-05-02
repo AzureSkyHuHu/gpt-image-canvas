@@ -10,10 +10,11 @@ export interface DataOwner {
 }
 
 export function currentDataOwner(c: Context<{ Variables: AuthVariables }>): DataOwner {
-  if (!isAuthEnabled()) {
+  const auth = c.get("auth");
+  if (!isAuthEnabled() || auth?.isAdmin) {
     return {
       id: LOCAL_DATA_OWNER_ID,
-      label: "Local",
+      label: auth?.isAdmin ? "Admin local" : "Local",
       isLocal: true
     };
   }

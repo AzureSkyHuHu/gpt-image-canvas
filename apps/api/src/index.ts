@@ -28,6 +28,12 @@ import {
 } from "./access-token-store.js";
 import { deleteStoredAssetPreviews, parsePreviewWidth, readStoredAssetPreview } from "./asset-preview.js";
 import {
+  getAuthStatus,
+  logoutCodex,
+  pollCodexDeviceLogin,
+  startCodexDeviceLogin
+} from "./codex-auth.js";
+import {
   GENERATION_COUNTS,
   IMAGE_QUALITIES,
   OUTPUT_FORMATS,
@@ -36,6 +42,7 @@ import {
   composePrompt,
   validateSceneImageSize,
   type AppConfig,
+  type AuthStatusResponse,
   type CreateAccessTokenRequest,
   type GenerationCount,
   type ImageQuality,
@@ -50,13 +57,11 @@ import { closeDatabase } from "./database.js";
 import { currentDataOwner } from "./data-owner.js";
 import {
   ProviderError,
-  createOpenAIImageProvider,
   getConfiguredImageModel,
-  getOpenAIImageProviderConfig,
-  getOpenAIImageProviderConfigFromOverride,
   type EditImageProviderInput,
   type ImageProviderInput
 } from "./image-provider.js";
+import { createAccessTokenImageProvider, createLocalImageProvider } from "./image-provider-selection.js";
 import {
   deleteStoredAsset,
   getStoredAssetFile,
@@ -268,6 +273,61 @@ app.get("/api/config", (c) => {
   return c.json(config);
 });
 
+app.get("/api/auth/status", (c) => c.json(getRequestAuthStatus(c)));
+
+app.post("/api/auth/codex/device/start", async (c) => {
+  const codexAccess = requireCodexAdminAccess(c);
+  if (!codexAccess.ok) {
+    return c.json(codexAccess.error, 403);
+  }
+
+  try {
+    return c.json(await startCodexDeviceLogin(c.req.raw.signal));
+  } catch (error) {
+    if (error instanceof ProviderError) {
+      return providerErrorJson(c, error);
+    }
+
+    throw error;
+  }
+});
+
+app.post("/api/auth/codex/device/poll", async (c) => {
+  const codexAccess = requireCodexAdminAccess(c);
+  if (!codexAccess.ok) {
+    return c.json(codexAccess.error, 403);
+  }
+
+  const payload = await readJson(c.req.raw);
+  if (!payload.ok) {
+    return c.json(payload.error, 400);
+  }
+
+  const parsed = parseCodexPollPayload(payload.value);
+  if (!parsed.ok) {
+    return c.json(parsed.error, 400);
+  }
+
+  try {
+    return c.json(await pollCodexDeviceLogin(parsed.value, c.req.raw.signal));
+  } catch (error) {
+    if (error instanceof ProviderError) {
+      return providerErrorJson(c, error);
+    }
+
+    throw error;
+  }
+});
+
+app.post("/api/auth/codex/logout", (c) => {
+  const codexAccess = requireCodexAdminAccess(c);
+  if (!codexAccess.ok) {
+    return c.json(codexAccess.error, 403);
+  }
+
+  return c.json(logoutCodex());
+});
+
 app.get("/api/project", (c) => c.json(getProjectState(currentDataOwner(c))));
 
 app.get("/api/gallery", (c) => c.json(getGalleryImages(currentDataOwner(c))));
@@ -438,13 +498,8 @@ app.post("/api/images/generate", async (c) => {
     return c.json(assetLimit.error, 429);
   }
 
-  const providerConfig = getRequestImageProviderConfig(c);
-  if (!providerConfig.ok) {
-    return providerErrorJson(c, providerConfig.error);
-  }
-
   try {
-    const provider = createOpenAIImageProvider(providerConfig.config);
+    const provider = await createRequestImageProvider(c, c.req.raw.signal);
     return c.json(await runTextToImageGeneration(owner, parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {
@@ -472,13 +527,8 @@ app.post("/api/images/edit", async (c) => {
     return c.json(assetLimit.error, 429);
   }
 
-  const providerConfig = getRequestImageProviderConfig(c);
-  if (!providerConfig.ok) {
-    return providerErrorJson(c, providerConfig.error);
-  }
-
   try {
-    const provider = createOpenAIImageProvider(providerConfig.config);
+    const provider = await createRequestImageProvider(c, c.req.raw.signal);
     return c.json(await runReferenceImageGeneration(owner, parsed.value, provider, c.req.raw.signal));
   } catch (error) {
     if (error instanceof ProviderError) {
@@ -589,35 +639,50 @@ function accessTokenStoreErrorJson(c: Context, error: unknown) {
   throw error;
 }
 
-function getRequestImageProviderConfig(c: Context<AppEnv>):
-  | {
-      ok: true;
-      config: ReturnType<typeof getOpenAIImageProviderConfigFromOverride>;
-    }
-  | {
-      ok: false;
-      error: ProviderError;
-    } {
-  if (!isAuthEnabled()) {
-    return getOpenAIImageProviderConfig();
+function getRequestAuthStatus(c: Context<AppEnv>): AuthStatusResponse {
+  if (isAuthEnabled() && currentAccessPrincipal(c) && !c.get("auth")?.isAdmin) {
+    return {
+      provider: "openai",
+      openaiConfigured: true,
+      codex: {
+        available: false,
+        unavailableReason: "access_token_users_do_not_use_codex_fallback"
+      }
+    };
   }
 
-  const principal = currentAccessPrincipal(c);
-  if (!principal) {
+  return getAuthStatus();
+}
+
+function requireCodexAdminAccess(c: Context<AppEnv>): ParseResult<void> {
+  if (!isAuthEnabled() || c.get("auth")?.isAdmin) {
     return {
-      ok: false,
-      error: new ProviderError("missing_api_key", "请先输入访问 token。", 401)
+      ok: true,
+      value: undefined
     };
   }
 
   return {
-    ok: true,
-    config: getOpenAIImageProviderConfigFromOverride({
-      apiKey: principal.upstreamApiKey,
-      baseURL: principal.upstreamBaseURL,
-      model: principal.upstreamModel
-    })
+    ok: false,
+    error: errorResponse("admin_auth_required", "Codex 登录仅限管理员或本机模式使用。")
   };
+}
+
+async function createRequestImageProvider(c: Context<AppEnv>, signal?: AbortSignal) {
+  if (!isAuthEnabled() || c.get("auth")?.isAdmin) {
+    return createLocalImageProvider(signal);
+  }
+
+  const principal = currentAccessPrincipal(c);
+  if (!principal) {
+    throw new ProviderError("missing_api_key", "请先输入访问 token。", 401);
+  }
+
+  return createAccessTokenImageProvider({
+    apiKey: principal.upstreamApiKey,
+    baseURL: principal.upstreamBaseURL,
+    model: principal.upstreamModel
+  });
 }
 
 function providerHttpStatus(status: number): number {
@@ -660,6 +725,33 @@ function validateAssetLimit(owner: ReturnType<typeof currentDataOwner>, requeste
       "asset_limit_exceeded",
       `当前访问 token 已保存 ${currentCount} 张图片，最多允许 ${maxAssets} 张；本次请求需要 ${requestedCount} 张，剩余额度 ${remaining} 张。请先删除旧图片后再生成。`
     )
+  };
+}
+
+function parseCodexPollPayload(input: unknown): ParseResult<{ deviceAuthId: string; userCode: string }> {
+  if (!isRecord(input)) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "Codex 登录轮询请求必须是 JSON 对象。")
+    };
+  }
+
+  const deviceAuthId = parseOptionalString(input.deviceAuthId);
+  const userCode = parseOptionalString(input.userCode);
+
+  if (!deviceAuthId || !userCode) {
+    return {
+      ok: false,
+      error: errorResponse("invalid_request", "Codex 登录轮询缺少设备码。")
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      deviceAuthId,
+      userCode
+    }
   };
 }
 

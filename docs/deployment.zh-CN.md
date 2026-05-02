@@ -76,6 +76,14 @@ docker compose up -d --build
 
 推荐用 Docker 构建生产包。当前前端构建依赖新版 Node，后端图片尺寸和预览处理依赖 `sharp` 原生包；Dockerfile 会统一安装这些构建环境和依赖，避免本机 Node 或可选原生依赖版本不一致。
 
+如果只是想在本机验证生产构建，而宿主机 Node 版本不满足 Vite 要求，可以直接用本地 Docker Node 镜像运行：
+
+```sh
+docker run --rm -v "$PWD":/workspace -w /workspace node:24-bookworm-slim bash -lc 'corepack enable && corepack prepare pnpm@9.14.2 --activate && pnpm install --force && pnpm build'
+```
+
+该命令会在挂载目录内重建 `node_modules`，用于验证即可，不要提交依赖目录或构建产物。
+
 查看状态：
 
 ```sh

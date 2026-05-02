@@ -51,11 +51,12 @@ const defaultTokenForm: TokenFormState = {
 };
 
 const SESSION_BAR_POSITION_KEY = "gic-session-bar-position";
+const SESSION_HINT_KEY = "gic-session-hint";
 const SESSION_BAR_MARGIN = 8;
 const SESSION_BAR_DRAG_THRESHOLD = 4;
 
 export function AuthGate({ children }: AuthGateProps) {
-  const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
+  const [authStatus, setAuthStatus] = useState<AuthStatus>(() => (hasSessionHint() ? "ready" : "loading"));
   const [authEnabled, setAuthEnabled] = useState(false);
   const [userLabel, setUserLabel] = useState("");
   const [tokenInput, setTokenInput] = useState("");
@@ -110,8 +111,14 @@ export function AuthGate({ children }: AuthGateProps) {
       setAuthEnabled(body.authEnabled);
       setUserLabel(body.user?.label ?? "");
       setAuthStatus(!body.authEnabled || body.authenticated ? "ready" : "locked");
+      if (!body.authEnabled || body.authenticated) {
+        writeSessionHint();
+      } else {
+        clearSessionHint();
+      }
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : "认证状态读取失败。");
+      clearSessionHint();
       setAuthStatus("locked");
     }
   }
@@ -164,6 +171,7 @@ export function AuthGate({ children }: AuthGateProps) {
       if (!response.ok) {
         throw new Error(await readErrorMessage(response));
       }
+      writeSessionHint();
       await refreshAuth();
       setTokenInput("");
     } catch (error) {
@@ -178,6 +186,7 @@ export function AuthGate({ children }: AuthGateProps) {
       method: "POST",
       credentials: "same-origin"
     });
+    clearSessionHint();
     setAuthStatus(authEnabled ? "locked" : "ready");
     setUserLabel("");
   }
@@ -200,6 +209,7 @@ export function AuthGate({ children }: AuthGateProps) {
       if (!response.ok) {
         throw new Error(await readErrorMessage(response));
       }
+      writeSessionHint();
       setAdminPassword("");
       setAdminStatus("authenticated");
       await refreshTokens();
@@ -216,6 +226,7 @@ export function AuthGate({ children }: AuthGateProps) {
       method: "POST",
       credentials: "same-origin"
     });
+    clearSessionHint();
     setAdminStatus("guest");
     setTokens([]);
     resetTokenForm();
@@ -650,6 +661,34 @@ function maskValue(value: string): string {
     return `${value.slice(0, 2)}...${value.slice(-2)}`;
   }
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function hasSessionHint(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  try {
+    return window.localStorage.getItem(SESSION_HINT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeSessionHint(): void {
+  try {
+    window.localStorage.setItem(SESSION_HINT_KEY, "1");
+  } catch {
+    // Ignore storage failures; the server cookie remains the source of truth.
+  }
+}
+
+function clearSessionHint(): void {
+  try {
+    window.localStorage.removeItem(SESSION_HINT_KEY);
+  } catch {
+    // Ignore storage failures; the server cookie remains the source of truth.
+  }
 }
 
 function readSessionBarPosition(): SessionBarPosition | undefined {

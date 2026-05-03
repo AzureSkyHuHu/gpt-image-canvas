@@ -23,6 +23,7 @@ services:
       - ./data:/app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "piachi-tools.test.com:host-gateway"
     restart: always
     networks:
       - infra

@@ -60,6 +60,59 @@ APP_MAX_ASSETS_PER_TOKEN=100
 openssl rand -base64 32
 ```
 
+## my_tools 托管上游部署
+
+如果图片生成/编辑请求由 `my_tools` 统一代理，生产环境建议使用：
+
+```env
+IMAGE_BACKEND=my_tools
+MY_TOOLS_IMAGE_BASE_URL=http://piachi-tools.test.com
+MY_TOOLS_IMAGE_SHARED_SECRET=replace-with-shared-secret
+```
+
+`my_tools` 侧需要配置同一个密钥：
+
+```env
+GIC_IMAGE_SHARED_SECRET=replace-with-shared-secret
+```
+
+也可以让 `my_tools` 复用存储密钥，具体以 `my_tools` 当前配置为准。
+
+该模式下普通 access-token 用户生成/编辑图片时：
+
+```text
+gpt-image-canvas
+  -> POST MY_TOOLS_IMAGE_BASE_URL/api/internal/gic/images/generate 或 edit
+  -> my_tools 解析真实上游策略
+  -> my_tools 请求 OpenAI-compatible 图片上游
+```
+
+注意：`my_tools` 创建 image access token 时可能只传占位 upstream key，例如 `managed-by-my-tools`。这在 `IMAGE_BACKEND=my_tools` 下是正常的；真实上游 key 不会由普通用户路径在本项目内使用。
+
+如果 `MY_TOOLS_IMAGE_BASE_URL` 使用宿主机 Nginx 域名，例如 `piachi-tools.test.com`，需要确保 image 容器内也能解析这个域名。当前 `docker-compose.yml` 已包含：
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+  - "piachi-tools.test.com:host-gateway"
+```
+
+如果你的 `my_tools` 域名不同，需要同步修改这条 `extra_hosts`，或者把 `MY_TOOLS_IMAGE_BASE_URL` 改为容器网络里可解析的服务名。
+
+容器内可以这样验证连通性：
+
+```sh
+docker exec gpt_image_canvas_app sh -lc 'getent hosts piachi-tools.test.com'
+docker exec gpt_image_canvas_app sh -lc 'node -e "fetch(process.env.MY_TOOLS_IMAGE_BASE_URL + \"/api/internal/gic/images/test\", { method: \"POST\", headers: { \"X-GIC-Image-Key\": process.env.MY_TOOLS_IMAGE_SHARED_SECRET || \"\" } }).then(async r => { console.log(r.status); console.log(await r.text()) }).catch(e => { console.error(e); process.exit(1) })"'
+```
+
+成功时应返回类似：
+
+```text
+200
+{"ok":true,"message":"my_tools image backend is available."}
+```
+
 ## 启动和更新
 
 验证 Compose 配置时不要打印展开后的 `.env`：
@@ -216,3 +269,19 @@ docker compose config --quiet
 - 检查当前登录 token 的上游 API key、Base URL 和模型。
 - 管理员面板里确认 token 没有被停用。
 - 查看 `docker compose logs -f app`，但不要把包含密钥的日志公开。
+
+`IMAGE_BACKEND=my_tools` 下生成秒失败，前端提示 `fetch failed`：
+
+通常是 image 容器无法访问 `MY_TOOLS_IMAGE_BASE_URL`。先在容器内检查：
+
+```sh
+docker exec gpt_image_canvas_app sh -lc 'getent hosts piachi-tools.test.com'
+```
+
+如果返回 `ENOTFOUND` 或没有解析结果，说明容器 DNS 不知道这个域名。解决方式：
+
+- 在 `docker-compose.yml` 的 `extra_hosts` 中加入 `piachi-tools.test.com:host-gateway`，域名按实际情况替换。
+- 重新创建容器让 `/etc/hosts` 生效：`docker compose up -d --force-recreate`。
+- 再调用 `/api/internal/gic/images/test` 验证。
+
+如果 Nginx access log 看不到 `/api/internal/gic/images/generate` 或 `/edit`，说明请求还没有到达 `my_tools`，优先查容器 DNS、网络和 shared secret。只有请求进入 `my_tools` 后，才需要继续判断是否走了 `global`、`personal + newapi`、`personal + manual` 或 `supapi` 策略。

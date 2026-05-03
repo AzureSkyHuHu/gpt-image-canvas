@@ -345,9 +345,10 @@ function toGeneratedAsset(asset: (typeof assets.$inferSelect) | undefined): Gene
     width: asset.width,
     height: asset.height,
     cloud:
-      asset.cloudProvider === "cos" && (asset.cloudStatus === "uploaded" || asset.cloudStatus === "failed")
+      (asset.cloudProvider === "cos" || asset.cloudProvider === "my_tools") &&
+      (asset.cloudStatus === "uploaded" || asset.cloudStatus === "failed")
         ? {
-            provider: asset.cloudProvider,
+            provider: asset.cloudProvider as "cos" | "my_tools",
             status: asset.cloudStatus,
             lastError: asset.cloudError ?? undefined,
             uploadedAt: asset.cloudUploadedAt ?? undefined

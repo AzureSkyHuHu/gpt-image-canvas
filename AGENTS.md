@@ -1,6 +1,7 @@
 # Repository Notes
 
 - Use `pnpm install`; the package manager is pinned to `pnpm@9.14.2`.
+- Prefer the Node runtime inside Docker for Node-related work. Use the Docker-provided Node for `node`, `pnpm`, `npm`, typecheck, build, and dev-server verification whenever Docker is available; host Node may have the wrong version or native-module ABI.
 - Run `pnpm typecheck` and `pnpm build` before completing a story.
 - UI stories require browser verification against the running app.
 - The API app lives in `apps/api`; the web app lives in `apps/web`; shared contracts live in `packages/shared`.

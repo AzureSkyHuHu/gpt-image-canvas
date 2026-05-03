@@ -42,6 +42,31 @@ export interface CosAssetLocation {
   key: string;
 }
 
+export interface MyToolsStorageAdapterConfig {
+  baseUrl: string;
+  sharedSecret: string;
+}
+
+export interface MyToolsAssetPutInput {
+  bytes: Buffer;
+  mimeType: string;
+  metadata: {
+    imageOwnerId: string;
+    assetId: string;
+    fileName: string;
+    mimeType: string;
+    width: number;
+    height: number;
+    createdAt: string;
+    generationId?: string;
+    outputId?: string;
+  };
+}
+
+export interface MyToolsAssetLocation {
+  archiveId: string;
+}
+
 export class LocalAssetStorageAdapter implements AssetStorageAdapter<LocalAssetPutInput, LocalAssetLocation> {
   async putObject(input: LocalAssetPutInput): Promise<AssetStoragePutResult> {
     await writeFile(input.filePath, input.bytes);
@@ -117,6 +142,97 @@ export class CosAssetStorageAdapter implements AssetStorageAdapter<CosAssetPutIn
   }
 }
 
+export class MyToolsAssetStorageAdapter implements AssetStorageAdapter<MyToolsAssetPutInput, MyToolsAssetLocation> {
+  private readonly baseUrl: string;
+
+  constructor(private readonly config: MyToolsStorageAdapterConfig) {
+    this.baseUrl = config.baseUrl.replace(/\/+$/u, "");
+  }
+
+  async putObject(input: MyToolsAssetPutInput): Promise<AssetStoragePutResult & { archiveId: string }> {
+    const formData = new FormData();
+    formData.set(
+      "file",
+      new Blob([bufferToArrayBuffer(input.bytes)], { type: input.mimeType }),
+      input.metadata.fileName
+    );
+    formData.set("metadata", JSON.stringify(input.metadata));
+
+    const response = await fetch(`${this.baseUrl}/api/internal/gic/assets`, {
+      method: "POST",
+      headers: {
+        ...this.authHeaders(),
+        Accept: "application/json"
+      },
+      body: formData
+    });
+
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, "my_tools asset upload failed."));
+    }
+
+    const data = await response.json() as { archiveId?: unknown; requestId?: unknown };
+    if (typeof data.archiveId !== "string" || !data.archiveId.trim()) {
+      throw new Error("my_tools asset upload returned no archiveId.");
+    }
+
+    return {
+      archiveId: data.archiveId,
+      requestId: typeof data.requestId === "string" ? data.requestId : undefined
+    };
+  }
+
+  async getObject(location: MyToolsAssetLocation): Promise<Buffer> {
+    const response = await fetch(
+      `${this.baseUrl}/api/internal/gic/assets/${encodeURIComponent(location.archiveId)}`,
+      {
+        method: "GET",
+        headers: this.authHeaders()
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, "my_tools asset read failed."));
+    }
+
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  async deleteObject(location: MyToolsAssetLocation): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/api/internal/gic/assets/${encodeURIComponent(location.archiveId)}`,
+      {
+        method: "DELETE",
+        headers: this.authHeaders()
+      }
+    );
+
+    if (!response.ok && response.status !== 404) {
+      throw new Error(await responseErrorMessage(response, "my_tools asset delete failed."));
+    }
+  }
+
+  async testConfig(): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/api/internal/gic/storage/test`, {
+      method: "POST",
+      headers: {
+        ...this.authHeaders(),
+        Accept: "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, "my_tools storage test failed."));
+    }
+  }
+
+  private authHeaders(): Record<string, string> {
+    return {
+      "X-GIC-Storage-Key": this.config.sharedSecret
+    };
+  }
+}
+
 export function buildCosObjectKey(keyPrefix: string, fileName: string, createdAt: string): string {
   const date = new Date(createdAt);
   const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
@@ -147,4 +263,29 @@ export function storageErrorMessage(error: unknown): string {
   }
 
   return "Cloud storage request failed.";
+}
+
+async function responseErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const data = await response.json() as { message?: unknown };
+      if (typeof data.message === "string" && data.message.trim()) {
+        return data.message.trim();
+      }
+    }
+
+    const text = await response.text();
+    if (text.trim()) {
+      return text.trim().slice(0, 1200);
+    }
+  } catch {
+    // Use fallback below.
+  }
+
+  return fallback;
+}
+
+function bufferToArrayBuffer(buffer: Buffer): ArrayBuffer {
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
 }

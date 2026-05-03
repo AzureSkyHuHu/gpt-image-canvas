@@ -2,13 +2,23 @@ import { and, eq } from "drizzle-orm";
 import type { SaveStorageConfigRequest, StorageConfigResponse, StorageTestResult } from "./contracts.js";
 import { db } from "./database.js";
 import type { DataOwner } from "./data-owner.js";
-import { CosAssetStorageAdapter, normalizeKeyPrefix, type CosStorageAdapterConfig, storageErrorMessage } from "./asset-storage.js";
+import {
+  CosAssetStorageAdapter,
+  MyToolsAssetStorageAdapter,
+  normalizeKeyPrefix,
+  type CosStorageAdapterConfig,
+  type MyToolsStorageAdapterConfig,
+  storageErrorMessage
+} from "./asset-storage.js";
 import { storageConfigs } from "./schema.js";
 
 const ACTIVE_STORAGE_CONFIG_ID = "active";
 const DEFAULT_COS_BUCKET = process.env.COS_DEFAULT_BUCKET?.trim() || "source-1253253332";
 const DEFAULT_COS_REGION = process.env.COS_DEFAULT_REGION?.trim() || "ap-nanjing";
 const DEFAULT_COS_KEY_PREFIX = process.env.COS_DEFAULT_KEY_PREFIX?.trim() || "gpt-image-canvas/assets";
+const ENV_CLOUD_STORAGE_PROVIDER = process.env.CLOUD_STORAGE_PROVIDER?.trim();
+const MY_TOOLS_STORAGE_BASE_URL = process.env.MY_TOOLS_STORAGE_BASE_URL?.trim();
+const MY_TOOLS_STORAGE_SHARED_SECRET = process.env.MY_TOOLS_STORAGE_SHARED_SECRET?.trim();
 
 type StorageConfigRow = typeof storageConfigs.$inferSelect;
 
@@ -72,8 +82,44 @@ export async function saveStorageConfig(owner: DataOwner, input: SaveStorageConf
   return getStorageConfig(owner);
 }
 
+export function getActiveMyToolsStorageConfig(_owner: DataOwner): MyToolsStorageAdapterConfig | undefined {
+  if (ENV_CLOUD_STORAGE_PROVIDER !== "my_tools" || !MY_TOOLS_STORAGE_BASE_URL || !MY_TOOLS_STORAGE_SHARED_SECRET) {
+    return undefined;
+  }
+
+  return {
+    baseUrl: MY_TOOLS_STORAGE_BASE_URL,
+    sharedSecret: MY_TOOLS_STORAGE_SHARED_SECRET
+  };
+}
+
+export function getActiveCloudStorageProvider(owner: DataOwner): "cos" | "my_tools" | undefined {
+  if (getActiveMyToolsStorageConfig(owner)) {
+    return "my_tools";
+  }
+
+  if (getActiveCosStorageConfig(owner)) {
+    return "cos";
+  }
+
+  return undefined;
+}
+
 export async function testStorageConfig(owner: DataOwner, input: SaveStorageConfigRequest): Promise<StorageTestResult> {
   try {
+    if (input.provider === "my_tools") {
+      const config = getActiveMyToolsStorageConfig(owner);
+      if (!config) {
+        throw new Error("my_tools storage is not configured by environment variables.");
+      }
+
+      await new MyToolsAssetStorageAdapter(config).testConfig();
+      return {
+        ok: true,
+        message: "my_tools storage is available."
+      };
+    }
+
     const parsed = resolveCosConfigForSave(input, getStorageConfigRow(owner));
     await new CosAssetStorageAdapter(parsed).testConfig();
     return {

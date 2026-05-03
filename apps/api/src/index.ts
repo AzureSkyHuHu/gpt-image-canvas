@@ -61,7 +61,12 @@ import {
   type EditImageProviderInput,
   type ImageProviderInput
 } from "./image-provider.js";
-import { createAccessTokenImageProvider, createLocalImageProvider } from "./image-provider-selection.js";
+import {
+  createAccessTokenImageProvider,
+  createLocalImageProvider,
+  createMyToolsImageProvider,
+  getConfiguredImageBackendMode
+} from "./image-provider-selection.js";
 import {
   deleteStoredAsset,
   getStoredAssetFile,
@@ -676,6 +681,27 @@ async function createRequestImageProvider(c: Context<AppEnv>, signal?: AbortSign
   const principal = currentAccessPrincipal(c);
   if (!principal) {
     throw new ProviderError("missing_api_key", "请先输入访问 token。", 401);
+  }
+
+  const backend = getConfiguredImageBackendMode();
+  if (backend === "my_tools") {
+    const baseUrl = process.env.MY_TOOLS_IMAGE_BASE_URL?.trim();
+    const sharedSecret =
+      process.env.MY_TOOLS_IMAGE_SHARED_SECRET?.trim() || process.env.MY_TOOLS_STORAGE_SHARED_SECRET?.trim();
+
+    if (!baseUrl || !sharedSecret) {
+      throw new ProviderError("missing_provider", "服务器没有完成 my_tools 图像后端配置。", 500);
+    }
+
+    return createMyToolsImageProvider({
+      baseUrl,
+      sharedSecret,
+      imageOwnerId: principal.id
+    });
+  }
+
+  if (backend === "local") {
+    throw new ProviderError("image_backend_forbidden", "普通访问 token 用户不能使用本地图片后端。", 403);
   }
 
   return createAccessTokenImageProvider({

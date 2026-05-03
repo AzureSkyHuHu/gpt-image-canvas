@@ -25,13 +25,15 @@ import {
 import {
   CosAssetStorageAdapter,
   LocalAssetStorageAdapter,
+  MyToolsAssetStorageAdapter,
   buildCosObjectKey,
   storageErrorMessage,
-  type CosAssetLocation
+  type CosAssetLocation,
+  type MyToolsAssetLocation
 } from "./asset-storage.js";
 import { runtimePaths } from "./runtime.js";
 import { assets, generationOutputs, generationRecords } from "./schema.js";
-import { getActiveCosStorageConfig } from "./storage-config.js";
+import { getActiveCosStorageConfig, getActiveCloudStorageProvider, getActiveMyToolsStorageConfig } from "./storage-config.js";
 
 const BATCH_CONCURRENCY = 2;
 const localAssetStorage = new LocalAssetStorageAdapter();
@@ -41,7 +43,7 @@ interface StoredAssetFile {
   fileName: string;
   filePath: string;
   mimeType: string;
-  cloud?: CosAssetLocation;
+  cloud?: CloudAssetLocation;
 }
 
 interface BatchOutputResult {
@@ -58,9 +60,9 @@ interface SavedProviderImage {
 }
 
 interface AssetCloudStorageRecord {
-  provider: "cos";
-  bucket: string;
-  region: string;
+  provider: "cos" | "my_tools";
+  bucket?: string;
+  region?: string;
   objectKey: string;
   status: "uploaded" | "failed";
   error?: string;
@@ -68,6 +70,10 @@ interface AssetCloudStorageRecord {
   etag?: string;
   requestId?: string;
 }
+
+type CloudAssetLocation =
+  | ({ provider: "cos" } & CosAssetLocation)
+  | ({ provider: "my_tools" } & MyToolsAssetLocation);
 
 type PersistedGenerationInput = ImageProviderInput & {
   mode: "generate" | "edit";
@@ -152,7 +158,7 @@ export function getStoredAssetFile(owner: DataOwner, assetId: string): StoredAss
     fileName: asset.fileName,
     filePath,
     mimeType: asset.mimeType,
-    cloud: toCosAssetLocation(asset)
+    cloud: toCloudAssetLocation(asset)
   };
 }
 
@@ -338,9 +344,12 @@ async function saveProviderImage(
 
   await localAssetStorage.putObject({ filePath, bytes });
   const cloudStorage = await saveAssetToConfiguredCloud(owner, {
+    assetId,
     fileName,
     bytes,
     mimeType,
+    width: imageSize.width,
+    height: imageSize.height,
     createdAt: new Date().toISOString()
   });
 
@@ -481,6 +490,30 @@ async function saveAssetToConfiguredCloud(
   owner: DataOwner,
   input: {
     fileName: string;
+    assetId: string;
+    bytes: Buffer;
+    mimeType: string;
+    width: number;
+    height: number;
+    createdAt: string;
+  }
+): Promise<AssetCloudStorageRecord | undefined> {
+  const provider = getActiveCloudStorageProvider(owner);
+  if (!provider) {
+    return undefined;
+  }
+
+  if (provider === "my_tools") {
+    return saveAssetToMyToolsCloud(owner, input);
+  }
+
+  return saveAssetToCosCloud(owner, input);
+}
+
+async function saveAssetToCosCloud(
+  owner: DataOwner,
+  input: {
+    fileName: string;
     bytes: Buffer;
     mimeType: string;
     createdAt: string;
@@ -523,9 +556,79 @@ async function saveAssetToConfiguredCloud(
   }
 }
 
-async function readCloudAsset(owner: DataOwner, location: CosAssetLocation | undefined): Promise<Buffer | undefined> {
+async function saveAssetToMyToolsCloud(
+  owner: DataOwner,
+  input: {
+    assetId: string;
+    fileName: string;
+    bytes: Buffer;
+    mimeType: string;
+    width: number;
+    height: number;
+    createdAt: string;
+  }
+): Promise<AssetCloudStorageRecord | undefined> {
+  const config = getActiveMyToolsStorageConfig(owner);
+  if (!config) {
+    return undefined;
+  }
+
+  const adapter = new MyToolsAssetStorageAdapter(config);
+
+  try {
+    const result = await adapter.putObject({
+      bytes: input.bytes,
+      mimeType: input.mimeType,
+      metadata: {
+        imageOwnerId: owner.id,
+        assetId: input.assetId,
+        fileName: input.fileName,
+        mimeType: input.mimeType,
+        width: input.width,
+        height: input.height,
+        createdAt: input.createdAt
+      }
+    });
+
+    return {
+      provider: "my_tools",
+      bucket: "my_tools",
+      objectKey: result.archiveId,
+      status: "uploaded",
+      uploadedAt: new Date().toISOString(),
+      requestId: result.requestId
+    };
+  } catch (error) {
+    return {
+      provider: "my_tools",
+      bucket: "my_tools",
+      objectKey: input.assetId,
+      status: "failed",
+      error: storageErrorMessage(error)
+    };
+  }
+}
+
+async function readCloudAsset(owner: DataOwner, location: CloudAssetLocation | undefined): Promise<Buffer | undefined> {
+  if (!location) {
+    return undefined;
+  }
+
+  if (location.provider === "my_tools") {
+    const config = getActiveMyToolsStorageConfig(owner);
+    if (!config) {
+      return undefined;
+    }
+
+    try {
+      return await new MyToolsAssetStorageAdapter(config).getObject({ archiveId: location.archiveId });
+    } catch {
+      return undefined;
+    }
+  }
+
   const config = getActiveCosStorageConfig(owner);
-  if (!location || !config) {
+  if (!config) {
     return undefined;
   }
 
@@ -536,27 +639,47 @@ async function readCloudAsset(owner: DataOwner, location: CosAssetLocation | und
   }
 }
 
-async function deleteCloudAsset(owner: DataOwner, location: CosAssetLocation | undefined): Promise<void> {
+async function deleteCloudAsset(owner: DataOwner, location: CloudAssetLocation | undefined): Promise<void> {
+  if (!location) {
+    return;
+  }
+
+  if (location.provider === "my_tools") {
+    const config = getActiveMyToolsStorageConfig(owner);
+    if (!config) {
+      return;
+    }
+
+    await new MyToolsAssetStorageAdapter(config).deleteObject({ archiveId: location.archiveId }).catch(() => undefined);
+    return;
+  }
+
   const config = getActiveCosStorageConfig(owner);
-  if (!location || !config) {
+  if (!config) {
     return;
   }
 
   await new CosAssetStorageAdapter(config).deleteObject(location).catch(() => undefined);
 }
 
-function toCosAssetLocation(asset: typeof assets.$inferSelect): CosAssetLocation | undefined {
-  if (
-    asset.cloudProvider !== "cos" ||
-    asset.cloudStatus !== "uploaded" ||
-    !asset.cloudBucket ||
-    !asset.cloudRegion ||
-    !asset.cloudObjectKey
-  ) {
+function toCloudAssetLocation(asset: typeof assets.$inferSelect): CloudAssetLocation | undefined {
+  if (asset.cloudStatus !== "uploaded" || !asset.cloudObjectKey) {
+    return undefined;
+  }
+
+  if (asset.cloudProvider === "my_tools") {
+    return {
+      provider: "my_tools",
+      archiveId: asset.cloudObjectKey
+    };
+  }
+
+  if (asset.cloudProvider !== "cos" || !asset.cloudBucket || !asset.cloudRegion) {
     return undefined;
   }
 
   return {
+    provider: "cos",
     bucket: asset.cloudBucket,
     region: asset.cloudRegion,
     key: asset.cloudObjectKey

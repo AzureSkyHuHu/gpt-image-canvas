@@ -120,8 +120,10 @@ access-token + AGENT_LLM_BACKEND=local:
   reject with a clear recoverable Agent error
 
 access-token + AGENT_LLM_BACKEND unset:
-  default to my_tools for access-token users, or fail closed if my_tools config is missing
+  default to my_tools only when APP_AUTH_ENABLED=true and the current owner is a non-local access-token user; fail closed if my_tools config is missing
 ```
+
+Auth disabled, admin, and local owners must continue to use the existing local Agent LLM configuration unless explicitly changed by a future design. They must not accidentally depend on `my_tools` just because `AGENT_LLM_BACKEND` is unset.
 
 Image backend behavior stays aligned with the existing request-aware image provider strategy:
 
@@ -151,6 +153,13 @@ Accept: text/event-stream
 Content-Type: application/json
 X-GIC-Agent-Key: <shared secret>
 ```
+
+Configuration:
+
+- `MY_TOOLS_BASE_URL` is the shared `my_tools` service base URL.
+- `MY_TOOLS_AGENT_SHARED_SECRET` is the preferred secret for `X-GIC-Agent-Key`.
+- If `MY_TOOLS_AGENT_SHARED_SECRET` is not set, the implementation may fall back to `MY_TOOLS_SHARED_SECRET` for compatibility.
+- Missing `MY_TOOLS_BASE_URL` or missing both secrets is a recoverable Agent configuration error for access-token users.
 
 Request body:
 
@@ -184,7 +193,7 @@ Response stream:
 
 ```text
 event: thinking_delta
-data: {"delta":"optional reasoning or thinking text safe to show"}
+data: {"delta":"display-safe planning status text"}
 
 event: delta
 data: {"delta":"model output text chunk"}
@@ -203,6 +212,12 @@ data: {"code":"upstream_failure","message":"safe user-facing error"}
 - `done.text` is treated exactly like the current model output. It is parsed, validated, retried with reflection when allowed, and used to replace temporary plan metadata.
 - If `done.text` is omitted, the runner uses the accumulated `delta` chunks as the complete model output.
 - `error` becomes a recoverable Agent error and ends the run as failed.
+- Exactly one terminal event is allowed: `done` or `error`.
+- Events received after a terminal event are ignored.
+- A closed stream without `done` or `error` is treated as a stream interruption.
+- User cancellation must abort the outbound SSE request from `gpt-image-canvas` to `my_tools`.
+- `my_tools` should treat client disconnect as a best-effort cancellation signal for its own upstream LLM request.
+- `my_tools` must only send display-safe status text in `thinking_delta`; it must not forward hidden chain-of-thought, raw provider reasoning, secrets, upstream headers, credential-bearing URLs, or vendor-internal error payloads.
 
 If `my_tools` later needs a bidirectional protocol, only `MyToolsAgentPlannerRunner` should change; the browser WebSocket contract remains stable.
 
@@ -225,7 +240,7 @@ Generate metadata includes:
 - `outputFormat`
 - `count`
 
-Edit metadata includes the same fields plus reference image file upload. Multi-reference support should preserve existing request shape where possible; if `my_tools` only supports one file at first, the provider must fail clearly when Agent attempts a multi-reference job rather than silently dropping references.
+Edit metadata includes the same fields plus reference image uploads. First-phase `my_tools` edit support must accept the same Agent limit as local execution: up to 3 resolved reference images per job. The provider must never silently drop extra references. If `my_tools` rejects a valid 1-3 reference request, the job should fail with a clear provider error.
 
 Response body:
 
@@ -251,6 +266,7 @@ Agent LLM errors from `my_tools` become recoverable Agent WebSocket errors:
 - upstream provider failure
 - invalid response body
 - empty model text
+- user cancellation or server-side abort
 
 The WebSocket session should send a stable `error` event and then `run_done` with `failed`. Secrets, raw headers, upstream keys, `.env` values, filesystem paths, and raw credential-bearing URLs must not be exposed.
 
@@ -266,7 +282,7 @@ Agent image provider errors should preserve existing plan execution behavior:
 - Access-token users must not use local/global Agent LLM credentials unless explicitly allowed by a future design.
 - Access-token users must not use local/global image provider credentials when `IMAGE_BACKEND=my_tools`.
 - `agentOwnerId` and `imageOwnerId` must be derived from server-side request context, not from browser-provided payload.
-- `X-GIC-Agent-Key`, `X-GIC-Image-Key`, access-token upstream keys, provider keys, Codex tokens, and storage secrets must never be logged or returned to the browser.
+- `X-GIC-Agent-Key`, `MY_TOOLS_AGENT_SHARED_SECRET`, `X-GIC-Image-Key`, access-token upstream keys, provider keys, Codex tokens, and storage secrets must never be logged or returned to the browser.
 - Frontend asset URLs remain `/api/assets/:id`; do not expose internal `my_tools` archive ids or service URLs as canvas image sources.
 
 ## Acceptance Criteria
@@ -281,6 +297,7 @@ Agent image provider errors should preserve existing plan execution behavior:
 - Plan caps, selected reference rules, dependency rules, retry behavior, cancellation, and asset preview events remain unchanged.
 - No SQLite schema change is required for the first phase.
 - No frontend protocol change is required for the first phase.
+- Existing Agent LLM "missing config" UI must not block ordinary access-token users when their Agent LLM backend is `my_tools`; the UI may still show local/admin configuration state for local users and administrators.
 
 ## Verification Requirements
 

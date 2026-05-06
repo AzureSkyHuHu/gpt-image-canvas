@@ -153,7 +153,7 @@ function getOpenAIImageProviderTimeoutMs(): number {
 
 function getMyToolsImageProviderConfig(): { baseUrl: string; sharedSecret: string } | undefined {
   const baseUrl = process.env.MY_TOOLS_BASE_URL?.trim();
-  const sharedSecret = process.env.MY_TOOLS_SHARED_SECRET?.trim();
+  const sharedSecret = process.env.MY_TOOLS_IMAGE_SHARED_SECRET?.trim();
   if (!baseUrl || !sharedSecret) {
     return undefined;
   }
@@ -191,8 +191,14 @@ class MyToolsImageProvider implements ImageProvider {
 
   async edit(input: EditImageProviderInput, signal?: AbortSignal): Promise<ProviderResult> {
     const formData = new FormData();
-    const reference = dataUrlToBlob(input.referenceImages[0] ?? input.referenceImage);
-    formData.set("file", reference.blob, reference.fileName);
+    const referenceInputs = input.referenceImages.length > 0 ? input.referenceImages : input.referenceImage ? [input.referenceImage] : [];
+    if (referenceInputs.length < 1 || referenceInputs.length > 3) {
+      throw new ProviderError("unsupported_provider_behavior", "my_tools edit requires 1 to 3 reference images.", 422);
+    }
+    const references = referenceInputs.map((referenceInput) => dataUrlToBlob(referenceInput));
+    for (const reference of references) {
+      formData.append("files[]", reference.blob, reference.fileName);
+    }
     formData.set(
       "metadata",
       JSON.stringify({

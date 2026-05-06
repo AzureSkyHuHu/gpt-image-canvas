@@ -14,7 +14,9 @@ import {
   isExecutableGenerationPlan,
   type StoredAgentGenerationPlan
 } from "./executor.js";
-import { createGenerationPlan } from "./planner.js";
+import { createGenerationPlan, createMyToolsAgentPlannerRunner } from "./planner.js";
+import { createRequestImageProvider } from "../providers/image-provider-selection.js";
+import type { RequestAuthState } from "../../server/http/access-control.js";
 
 const OPEN_READY_STATE = 1;
 const AGENT_SOCKET_SERVER_HEARTBEAT_INTERVAL_MS = 10_000;
@@ -45,6 +47,7 @@ interface ActiveAgentRun {
 interface AgentSocketSession {
   connectionId: string;
   owner: DataOwner;
+  auth: RequestAuthState;
   ws?: WSContext;
   activeRun?: ActiveAgentRun;
   plans: Map<string, StoredAgentGenerationPlan>;
@@ -66,8 +69,13 @@ interface MessageParseError {
 
 const sessions = new Map<string, AgentSocketSession>();
 
-export function createAgentWebSocketEvents(owner: DataOwner, connectionId?: string, runId?: string): WSEvents {
-  const { resumeFailedRunId, session } = resolveAgentSocketSession(owner, connectionId, runId);
+export function createAgentWebSocketEvents(
+  owner: DataOwner,
+  auth: RequestAuthState,
+  connectionId?: string,
+  runId?: string
+): WSEvents {
+  const { resumeFailedRunId, session } = resolveAgentSocketSession(owner, auth, connectionId, runId);
 
   return {
     onOpen(_event, ws) {
@@ -113,10 +121,11 @@ export function closeAllAgentSessions(reason = "server_shutdown"): void {
   sessions.clear();
 }
 
-function createAgentSocketSession(owner: DataOwner): AgentSocketSession {
+function createAgentSocketSession(owner: DataOwner, auth: RequestAuthState): AgentSocketSession {
   return {
     connectionId: randomUUID(),
     owner,
+    auth,
     plans: new Map(),
     pendingEvents: []
   };
@@ -124,6 +133,7 @@ function createAgentSocketSession(owner: DataOwner): AgentSocketSession {
 
 function resolveAgentSocketSession(
   owner: DataOwner,
+  auth: RequestAuthState,
   requestedConnectionId?: string,
   requestedRunId?: string
 ): { session: AgentSocketSession; resumeFailedRunId?: string } {
@@ -132,6 +142,7 @@ function resolveAgentSocketSession(
   if (connectionId) {
     const existingSession = sessions.get(connectionId);
     if (existingSession && existingSession.owner.id === owner.id) {
+      existingSession.auth = auth;
       return { session: existingSession };
     }
   }
@@ -141,11 +152,12 @@ function resolveAgentSocketSession(
       (session) => session.activeRun?.id === runId && session.owner.id === owner.id
     );
     if (activeRunSession) {
+      activeRunSession.auth = auth;
       return { session: activeRunSession };
     }
   }
 
-  const session = createAgentSocketSession(owner);
+  const session = createAgentSocketSession(owner, auth);
   return {
     session,
     resumeFailedRunId: connectionId && runId ? runId : undefined
@@ -310,19 +322,19 @@ function handleAgentMessage(data: WSMessageReceive, _ws: WSContext, session: Age
 }
 
 function handleAgentWorkMessage(message: AgentClientMessage, session: AgentSocketSession): void {
-  const llmConfig = getUsableAgentLlmConfig();
-  if (!llmConfig) {
-    sendSessionError(session, {
-      code: "missing_agent_config",
-      message: "Configure an Agent LLM before using the Agent.",
-      requestId: message.requestId,
-      runId: message.runId,
-      recoverable: true
-    });
-    return;
-  }
-
   if (message.type === "user_message") {
+    const planner = resolveAgentPlanner(session);
+    if (!planner.ok) {
+      sendSessionError(session, {
+        code: planner.code,
+        message: planner.message,
+        requestId: message.requestId,
+        runId: message.runId,
+        recoverable: true
+      });
+      return;
+    }
+
     if (session.activeRun) {
       sendSessionError(session, {
         code: "agent_run_in_progress",
@@ -341,7 +353,7 @@ function handleAgentWorkMessage(message: AgentClientMessage, session: AgentSocke
       cancelled: false
     };
     session.activeRun = activeRun;
-    void handleAgentPlanMessage(message, session, activeRun, llmConfig);
+    void handleAgentPlanMessage(message, session, activeRun, planner);
     return;
   }
 
@@ -393,7 +405,7 @@ async function handleAgentPlanMessage(
   message: Extract<AgentClientMessage, { type: "user_message" }>,
   session: AgentSocketSession,
   activeRun: ActiveAgentRun,
-  llmConfig: NonNullable<ReturnType<typeof getUsableAgentLlmConfig>>
+  planner: ResolvedAgentPlanner
 ): Promise<void> {
   let result: Awaited<ReturnType<typeof createGenerationPlan>>;
   try {
@@ -402,7 +414,8 @@ async function handleAgentPlanMessage(
       defaults: message.defaults,
       selectedReferences: message.selectedReferences,
       plannerOptions: message.plannerOptions,
-      llmConfig,
+      llmConfig: planner.llmConfig,
+      runner: planner.runner,
       onAssistantDelta: (delta) => {
         if (session.activeRun?.id !== activeRun.id || activeRun.cancelled) {
           return;
@@ -493,10 +506,18 @@ async function handleAgentPlanExecutionMessage(
 ): Promise<void> {
   let result: Awaited<ReturnType<typeof executeGenerationPlan>>;
   try {
+    const provider = await createRequestImageProvider(
+      {
+        owner: session.owner,
+        auth: session.auth
+      },
+      activeRun.controller.signal
+    );
     result = await executeGenerationPlan({
       ...storedPlan,
       mode: message.type === "execute_plan" ? "execute" : "retry_failed",
       owner: session.owner,
+      provider,
       requestId: message.requestId,
       runId: activeRun.id,
       signal: activeRun.controller.signal,
@@ -545,6 +566,72 @@ async function handleAgentPlanExecutionMessage(
     status: result.status,
     timestamp: new Date().toISOString()
   });
+}
+
+type ResolvedAgentPlanner = {
+  ok: true;
+  llmConfig?: NonNullable<ReturnType<typeof getUsableAgentLlmConfig>>;
+  runner?: ReturnType<typeof createMyToolsAgentPlannerRunner>;
+};
+
+type AgentPlannerResolution =
+  | ResolvedAgentPlanner
+  | {
+      ok: false;
+      code: string;
+      message: string;
+    };
+
+function resolveAgentPlanner(session: AgentSocketSession): AgentPlannerResolution {
+  if (shouldUseMyToolsAgentPlanner(session)) {
+    const config = getMyToolsAgentPlannerConfig();
+    if (!config) {
+      return {
+        ok: false,
+        code: "missing_agent_config",
+        message: "MY_TOOLS_BASE_URL and MY_TOOLS_AGENT_SHARED_SECRET are required for my_tools Agent planning."
+      };
+    }
+
+    return {
+      ok: true,
+      runner: createMyToolsAgentPlannerRunner({
+        ...config,
+        agentOwnerId: session.owner.id
+      })
+    };
+  }
+
+  const llmConfig = getUsableAgentLlmConfig();
+  if (!llmConfig) {
+    return {
+      ok: false,
+      code: "missing_agent_config",
+      message: "Configure an Agent LLM before using the Agent."
+    };
+  }
+
+  return {
+    ok: true,
+    llmConfig
+  };
+}
+
+function shouldUseMyToolsAgentPlanner(session: AgentSocketSession): boolean {
+  return (
+    !session.owner.isLocal &&
+    !session.auth.isAdmin &&
+    process.env.AGENT_LLM_BACKEND?.trim().toLowerCase() === "my_tools"
+  );
+}
+
+function getMyToolsAgentPlannerConfig(): { baseUrl: string; sharedSecret: string } | undefined {
+  const baseUrl = process.env.MY_TOOLS_BASE_URL?.trim();
+  const sharedSecret = process.env.MY_TOOLS_AGENT_SHARED_SECRET?.trim();
+  if (!baseUrl || !sharedSecret) {
+    return undefined;
+  }
+  return { baseUrl, sharedSecret };
 }
 
 function resolveStoredPlanForExecution(

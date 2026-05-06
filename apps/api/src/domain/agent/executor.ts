@@ -18,7 +18,6 @@ import {
 } from "../contracts.js";
 import type { DataOwner } from "../auth/data-owner.js";
 import { readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "../generation/image-generation.js";
-import { createConfiguredImageProvider } from "../providers/image-provider-selection.js";
 import type { ImageProvider, ImageProviderInput } from "../../infrastructure/providers/image-provider.js";
 
 export const AGENT_EXECUTION_TOOL_ALLOWLIST = ["generate_canvas_image_job"] as const;
@@ -33,7 +32,7 @@ export type AgentPlanExecutionMode = "execute" | "retry_failed";
 export interface AgentPlanExecutionInput extends StoredAgentGenerationPlan {
   mode: AgentPlanExecutionMode;
   owner: DataOwner;
-  provider?: ImageProvider;
+  provider: ImageProvider;
   requestId?: string;
   runId: string;
   signal: AbortSignal;
@@ -86,7 +85,7 @@ export async function executeGenerationPlan(input: AgentPlanExecutionInput): Pro
   let provider: ImageProvider;
   try {
     throwIfAborted(input.signal);
-    provider = input.provider ?? (await createConfiguredImageProvider(input.signal));
+    provider = input.provider;
   } catch (error) {
     if (isAbortError(error, input.signal)) {
       markPlanCancelled(plan);

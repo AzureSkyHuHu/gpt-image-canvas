@@ -91,10 +91,13 @@ interface PlannerMessage {
 
 export interface GenerationPlanAgentRunner {
   streamsThinkingDeltas?: boolean;
+  supportsVision?: boolean;
   invoke(
     input: {
       messages: PlannerMessage[];
       files?: Record<string, unknown>;
+      plannerOptions?: AgentPlannerOptions;
+      supportsVision?: boolean;
     },
     options?: {
       configurable?: {
@@ -112,7 +115,7 @@ export interface AgentPlannerInput {
   defaults?: unknown;
   selectedReferences?: unknown;
   plannerOptions?: unknown;
-  llmConfig: UsableAgentLlmConfig;
+  llmConfig?: UsableAgentLlmConfig;
   onAssistantDelta?: (delta: string) => void;
   onThinkingDelta?: (delta: string) => void;
   signal?: AbortSignal;
@@ -191,14 +194,22 @@ export async function createGenerationPlan(input: AgentPlannerInput): Promise<Ag
   }
 
   const plannerOptions = normalizeAgentPlannerOptions(input.plannerOptions);
-  const runner = input.runner ?? createDeepAgentsPlanner(input.llmConfig, plannerOptions);
+  if (!input.runner && !input.llmConfig) {
+    return {
+      ok: false,
+      code: "missing_agent_config",
+      message: "Configure an Agent LLM before using the Agent."
+    };
+  }
+
+  const runner = input.runner ?? createDeepAgentsPlanner(input.llmConfig as UsableAgentLlmConfig, plannerOptions);
   const now = input.now ?? new Date();
   const planId = `plan-${randomUUID()}`;
   const message = buildPlannerUserMessage({
     userText,
     defaults: defaultsResult.defaults,
     selectedReferences,
-    supportsVision: input.llmConfig.supportsVision
+    supportsVision: input.llmConfig?.supportsVision ?? runner.supportsVision ?? true
   });
 
   const planningSkillFiles = createPlanningSkillFiles(now);
@@ -227,7 +238,9 @@ export async function createGenerationPlan(input: AgentPlannerInput): Promise<Ag
       const agentResult = await runner.invoke(
         {
           messages,
-          files: planningSkillFiles
+          files: planningSkillFiles,
+          plannerOptions,
+          supportsVision: input.llmConfig?.supportsVision ?? runner.supportsVision ?? true
         },
         runnerOptions
       );
@@ -471,6 +484,237 @@ export function createDirectChatPlanner(model: ChatOpenAI): GenerationPlanAgentR
       };
     }
   };
+}
+
+export function createMyToolsAgentPlannerRunner(config: {
+  baseUrl: string;
+  sharedSecret: string;
+  agentOwnerId: string;
+}): GenerationPlanAgentRunner {
+  const baseUrl = config.baseUrl.replace(/\/+$/u, "");
+  return {
+    streamsThinkingDeltas: true,
+    supportsVision: true,
+    async invoke(input, options) {
+      const response = await fetch(`${baseUrl}/api/internal/gic/agent/plans/stream`, {
+        method: "POST",
+        headers: {
+          Accept: "text/event-stream, application/json",
+          "Content-Type": "application/json",
+          "X-GIC-Agent-Key": config.sharedSecret
+        },
+        body: JSON.stringify({
+          agentOwnerId: config.agentOwnerId,
+          messages: [
+            {
+              role: "system",
+              content: createDirectPlanningSystemPrompt()
+            },
+            ...input.messages
+          ],
+          files: normalizeMyToolsPlanningFiles(input.files),
+          plannerOptions: input.plannerOptions,
+          supportsVision: input.supportsVision,
+          threadId: options?.configurable?.thread_id,
+          recursionLimit: options?.recursionLimit
+        }),
+        signal: options?.signal
+      });
+
+      if (!response.ok) {
+        throw new Error(await myToolsAgentResponseErrorMessage(response));
+      }
+
+      const contentType = response.headers.get("content-type") ?? "";
+      if (contentType.toLowerCase().includes("application/json")) {
+        const data = (await response.json()) as unknown;
+        const text = myToolsAgentResponseText(data);
+        if (!text) {
+          throw new Error("my_tools Agent planner returned no plan text.");
+        }
+        return { messages: [{ content: text }] };
+      }
+
+      const streamState: MyToolsAgentSseState = {
+        contentChunks: []
+      };
+      const body = response.body;
+      if (!body) {
+        throw new Error("my_tools Agent planner returned an empty stream.");
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+        throwIfAborted(options?.signal);
+        buffer += decoder.decode(chunk, { stream: true });
+        buffer = drainMyToolsAgentSseBuffer(buffer, streamState, options?.onThinkingDelta);
+      }
+      buffer += decoder.decode();
+      drainMyToolsAgentSseBuffer(`${buffer}\n\n`, streamState, options?.onThinkingDelta);
+      throwIfAborted(options?.signal);
+
+      const content = streamState.doneText ?? streamState.contentChunks.join("");
+      return {
+        messages: [
+          {
+            content
+          }
+        ]
+      };
+    }
+  };
+}
+
+function normalizeMyToolsPlanningFiles(files: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!files) {
+    return undefined;
+  }
+
+  const normalized: Record<string, unknown> = {};
+  for (const [path, file] of Object.entries(files)) {
+    if (!isRecord(file)) {
+      normalized[path] = file;
+      continue;
+    }
+
+    normalized[path] = {
+      ...file,
+      content: planningFileContentToText(file.content)
+    };
+  }
+
+  return normalized;
+}
+
+function planningFileContentToText(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content.map((line) => (typeof line === "string" ? line : "")).join("\n");
+  }
+
+  return "";
+}
+
+async function myToolsAgentResponseErrorMessage(response: Response): Promise<string> {
+  try {
+    const data = (await response.json()) as { message?: unknown; error?: { message?: unknown } };
+    if (typeof data.message === "string" && data.message.trim()) {
+      return data.message.trim();
+    }
+    if (typeof data.error?.message === "string" && data.error.message.trim()) {
+      return data.error.message.trim();
+    }
+  } catch {
+    // Use fallback below.
+  }
+
+  return "my_tools Agent planner request failed.";
+}
+
+function myToolsAgentResponseText(data: unknown): string | undefined {
+  if (typeof data === "string") {
+    return nonEmptyString(data);
+  }
+  if (!isRecord(data)) {
+    return undefined;
+  }
+  return contentToText(data.text) ?? contentToText(data.delta) ?? contentToText(data.output) ?? extractTextFromAgentResult(data);
+}
+
+interface MyToolsAgentSseState {
+  contentChunks: string[];
+  doneText?: string;
+}
+
+function drainMyToolsAgentSseBuffer(
+  buffer: string,
+  state: MyToolsAgentSseState,
+  onThinkingDelta: ((delta: string) => void) | undefined
+): string {
+  let nextBuffer = buffer;
+  while (true) {
+    const boundary = nextBuffer.search(/\r?\n\r?\n/u);
+    if (boundary < 0) {
+      return nextBuffer;
+    }
+
+    const rawEvent = nextBuffer.slice(0, boundary);
+    nextBuffer = nextBuffer.slice(nextBuffer[boundary] === "\r" ? boundary + 4 : boundary + 2);
+    handleMyToolsAgentSseEvent(rawEvent, state, onThinkingDelta);
+  }
+}
+
+function handleMyToolsAgentSseEvent(
+  rawEvent: string,
+  state: MyToolsAgentSseState,
+  onThinkingDelta: ((delta: string) => void) | undefined
+): void {
+  const lines = rawEvent.split(/\r?\n/u);
+  let eventType = "message";
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      eventType = line.slice("event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return;
+  }
+
+  const rawData = dataLines.join("\n");
+  if (rawData === "[DONE]") {
+    return;
+  }
+
+  let parsed: unknown = rawData;
+  try {
+    parsed = JSON.parse(rawData) as unknown;
+  } catch {
+    // Plain string deltas are allowed.
+  }
+
+  const delta = myToolsAgentEventText(parsed);
+  if (eventType === "thinking_delta") {
+    if (delta) {
+      onThinkingDelta?.(delta);
+    }
+    return;
+  }
+
+  if (eventType === "delta") {
+    if (delta) {
+      state.contentChunks.push(delta);
+    }
+    return;
+  }
+
+  if (eventType === "done") {
+    if (delta) {
+      state.doneText = delta;
+    }
+    return;
+  }
+
+  if (eventType === "error") {
+    throw new Error(delta || "my_tools Agent planner stream failed.");
+  }
+}
+
+function myToolsAgentEventText(data: unknown): string | undefined {
+  if (typeof data === "string") {
+    return data;
+  }
+  if (!isRecord(data)) {
+    return undefined;
+  }
+  return streamingContentToText(data.delta) ?? streamingContentToText(data.text) ?? streamingContentToText(data.message);
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

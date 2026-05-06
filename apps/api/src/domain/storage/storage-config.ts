@@ -16,7 +16,7 @@ const DEFAULT_COS_BUCKET = process.env.COS_DEFAULT_BUCKET?.trim() || "source-125
 const DEFAULT_COS_REGION = process.env.COS_DEFAULT_REGION?.trim() || "ap-nanjing";
 const DEFAULT_COS_KEY_PREFIX = process.env.COS_DEFAULT_KEY_PREFIX?.trim() || "gpt-image-canvas/assets";
 const MY_TOOLS_BASE_URL = process.env.MY_TOOLS_BASE_URL?.trim() || "";
-const MY_TOOLS_SHARED_SECRET = process.env.MY_TOOLS_SHARED_SECRET?.trim() || "";
+const MY_TOOLS_STORAGE_SHARED_SECRET = process.env.MY_TOOLS_STORAGE_SHARED_SECRET?.trim() || "";
 
 type StorageConfigRow = typeof storageConfigs.$inferSelect;
 
@@ -51,13 +51,13 @@ export function getActiveCloudStorageProvider(): "cos" | "my_tools" | undefined 
 }
 
 export function getActiveMyToolsStorageConfig(): MyToolsStorageAdapterConfig | undefined {
-  if (!MY_TOOLS_BASE_URL || !MY_TOOLS_SHARED_SECRET) {
+  if (!MY_TOOLS_BASE_URL || !MY_TOOLS_STORAGE_SHARED_SECRET) {
     return undefined;
   }
 
   return {
     baseUrl: MY_TOOLS_BASE_URL,
-    sharedSecret: MY_TOOLS_SHARED_SECRET
+    sharedSecret: MY_TOOLS_STORAGE_SHARED_SECRET
   };
 }
 
@@ -107,7 +107,7 @@ export async function testStorageConfig(input: SaveStorageConfigRequest): Promis
     if (input.provider === "my_tools") {
       const config = getActiveMyToolsStorageConfig();
       if (!config) {
-        throw new Error("MY_TOOLS_BASE_URL and MY_TOOLS_SHARED_SECRET are required.");
+        throw new Error("MY_TOOLS_BASE_URL and MY_TOOLS_STORAGE_SHARED_SECRET are required.");
       }
       await new MyToolsAssetStorageAdapter(config).testConfig();
       return {

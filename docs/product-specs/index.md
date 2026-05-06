@@ -7,6 +7,7 @@ Current specs:
 - [New User Onboarding](new-user-onboarding.md)
 - [Provider Configuration](provider-configuration.md)
 - [Agent Canvas Generation](agent-canvas-generation.md)
+- [Agent my_tools Backend](agent-my-tools-backend.md)
 - [Gallery And Assets](gallery-and-assets.md)
 
 When adding a spec, keep it tied to user value, current behavior, acceptance criteria, and verification requirements. Put implementation execution plans under `docs/exec-plans/`.

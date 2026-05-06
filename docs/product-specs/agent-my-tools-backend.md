@@ -42,7 +42,7 @@ Agent WebSocket session
 
 ## Target Architecture
 
-浏览器到 `gpt-image-canvas` 仍保持现有 WebSocket。`gpt-image-canvas` 到 `my_tools` 的 Agent LLM 第一版使用 HTTP；后续可在同一 runner 策略下升级为 SSE、ndjson streaming 或 WebSocket。
+浏览器到 `gpt-image-canvas` 仍保持现有 WebSocket。`gpt-image-canvas` 到 `my_tools` 的 Agent LLM 第一版使用 SSE：`my_tools` 流式返回模型文本和 thinking 文本，`gpt-image-canvas` 将这些增量转发成现有 Agent WebSocket 事件，同时累积最终文本用于本地 `GenerationPlan` 解析和校验。
 
 ```text
 Browser
@@ -55,7 +55,7 @@ Browser
 gpt-image-canvas
   -> createRequestAgentPlannerRunner({ owner, auth }, plannerOptions)
       access-token + AGENT_LLM_BACKEND=my_tools
-        -> HTTP my_tools Agent LLM API
+        -> SSE my_tools Agent LLM API
       admin/local
         -> existing local Agent LLM config + DeepAgents runner
 
@@ -141,13 +141,13 @@ admin/local:
 
 Agent executor must not silently fall back to `createConfiguredImageProvider` for access-token runs. It should receive either an explicit provider or enough request context to call `createRequestImageProvider`.
 
-## my_tools Agent LLM HTTP Contract
+## my_tools Agent LLM SSE Contract
 
 First version target:
 
 ```text
-POST {MY_TOOLS_BASE_URL}/api/internal/gic/agent/plans
-Accept: application/json
+POST {MY_TOOLS_BASE_URL}/api/internal/gic/agent/plans/stream
+Accept: text/event-stream
 Content-Type: application/json
 X-GIC-Agent-Key: <shared secret>
 ```
@@ -180,19 +180,31 @@ Request body:
 }
 ```
 
-Response body:
+Response stream:
 
-```json
-{
-  "text": "model output text, usually GenerationPlan JSON or AgentUserQuestion JSON",
-  "thinkingText": "optional reasoning or thinking text safe to show",
-  "model": "optional upstream model id"
-}
+```text
+event: thinking_delta
+data: {"delta":"optional reasoning or thinking text safe to show"}
+
+event: delta
+data: {"delta":"model output text chunk"}
+
+event: done
+data: {"text":"complete model output text","thinkingText":"optional complete thinking text","model":"optional upstream model id"}
+
+event: error
+data: {"code":"upstream_failure","message":"safe user-facing error"}
 ```
 
-The `text` field is treated exactly like the current model output. `gpt-image-canvas` still parses it, validates it, retries with reflection when allowed, and replaces temporary plan metadata.
+`gpt-image-canvas` handles the stream as follows:
 
-The first version does not require streaming. If `my_tools` later supports SSE, ndjson, or WebSocket, only `MyToolsAgentPlannerRunner` should change; the browser WebSocket contract remains stable.
+- `thinking_delta` maps to Agent WebSocket `assistant_thinking_delta`.
+- `delta` maps to Agent WebSocket `assistant_delta`.
+- `done.text` is treated exactly like the current model output. It is parsed, validated, retried with reflection when allowed, and used to replace temporary plan metadata.
+- If `done.text` is omitted, the runner uses the accumulated `delta` chunks as the complete model output.
+- `error` becomes a recoverable Agent error and ends the run as failed.
+
+If `my_tools` later needs a bidirectional protocol, only `MyToolsAgentPlannerRunner` should change; the browser WebSocket contract remains stable.
 
 ## my_tools Image Contract
 
@@ -235,7 +247,7 @@ Agent LLM errors from `my_tools` become recoverable Agent WebSocket errors:
 
 - missing `my_tools` Agent config
 - invalid `AGENT_LLM_BACKEND`
-- HTTP timeout
+- SSE timeout or stream interruption
 - upstream provider failure
 - invalid response body
 - empty model text
@@ -260,6 +272,7 @@ Agent image provider errors should preserve existing plan execution behavior:
 ## Acceptance Criteria
 
 - For access-token users with `AGENT_LLM_BACKEND=my_tools`, Agent planning calls `my_tools` Agent LLM API instead of local Agent LLM config.
+- `my_tools` Agent LLM responses stream through SSE and are forwarded to the browser as existing Agent WebSocket delta events.
 - For admin/local users, existing Agent LLM configuration continues to work.
 - For access-token users with `IMAGE_BACKEND=my_tools`, Agent plan execution uses `my_tools` image generate/edit APIs.
 - Agent and Manual image generation share the same request-aware image provider rules.

@@ -64,13 +64,45 @@ export const serverConfig = {
   port: parsePort(process.env.PORT)
 };
 
+export const assetLimitConfig = {
+  maxAssetsPerToken: parseNonNegativeInteger(process.env.APP_MAX_ASSETS_PER_TOKEN, 100)
+};
+
 export const sqliteConfig = {
   journalMode: parseSqliteJournalMode(process.env.SQLITE_JOURNAL_MODE),
   lockingMode: parseSqliteLockingMode(process.env.SQLITE_LOCKING_MODE)
+};
+
+export const accessControlConfig = {
+  enabled: parseBoolean(process.env.APP_AUTH_ENABLED),
+  adminPassword: process.env.APP_ADMIN_PASSWORD?.trim() || "",
+  sessionSecret: process.env.APP_SESSION_SECRET?.trim() || "",
+  sessionDays: parsePositiveInteger(process.env.APP_SESSION_DAYS, 30),
+  bootstrapAccessToken: process.env.APP_BOOTSTRAP_ACCESS_TOKEN?.trim() || "",
+  bootstrapAccessLabel: process.env.APP_BOOTSTRAP_ACCESS_LABEL?.trim() || "Test access",
+  bootstrapUpstreamApiKey: process.env.APP_BOOTSTRAP_OPENAI_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || "",
+  bootstrapUpstreamBaseURL: process.env.APP_BOOTSTRAP_OPENAI_BASE_URL?.trim() || process.env.OPENAI_BASE_URL?.trim() || "",
+  bootstrapUpstreamModel:
+    process.env.APP_BOOTSTRAP_OPENAI_IMAGE_MODEL?.trim() || process.env.OPENAI_IMAGE_MODEL?.trim() || ""
 };
 
 export function ensureRuntimeStorage(): void {
   mkdirSync(runtimePaths.dataDir, { recursive: true });
   mkdirSync(runtimePaths.assetsDir, { recursive: true });
   mkdirSync(runtimePaths.assetPreviewsDir, { recursive: true });
+}
+
+function parseBoolean(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNonNegativeInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }

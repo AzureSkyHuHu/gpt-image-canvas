@@ -5,6 +5,7 @@
 @import "./styles/canvas-runtime.css";
 @import "./styles/gallery.css";
 @import "./styles/base.css";
+@import "./styles/auth.css";
 @import "./styles/layout-theme.css";
 @import "./styles/home.css";
 @import "./styles/provider-config.css";

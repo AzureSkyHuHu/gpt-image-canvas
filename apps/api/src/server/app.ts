@@ -4,6 +4,11 @@ import { Hono } from "hono";
 import { WebSocketServer } from "ws";
 import { runtimePaths } from "../infrastructure/runtime.js";
 import { errorResponse } from "./http/errors.js";
+import {
+  assertAuthConfigSafe,
+  authConfigWarnings,
+  authMiddleware
+} from "./http/access-control.js";
 import { registerAgentConfigRoutes } from "./routes/agent-config.js";
 import { registerAgentWebSocketRoutes } from "./routes/agent-ws.js";
 import { registerAssetRoutes } from "./routes/assets.js";
@@ -21,10 +26,17 @@ export const app = createApp();
 export function createApp(): Hono {
   const app = new Hono();
 
+  for (const warning of authConfigWarnings()) {
+    console.warn(warning);
+  }
+  assertAuthConfigSafe();
+
   app.onError((error, c) => {
     console.error(error);
     return c.json(errorResponse("internal_error", "Internal server error."), 500);
   });
+
+  app.use("/api/*", authMiddleware());
 
   registerCoreRoutes(app);
   registerAuthRoutes(app);

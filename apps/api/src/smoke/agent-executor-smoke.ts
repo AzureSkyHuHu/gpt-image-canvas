@@ -2,6 +2,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentSelectedCanvasReference, AgentServerEvent, GenerationPlan } from "../domain/contracts.js";
+import type { DataOwner } from "../domain/auth/data-owner.js";
 import type { EditImageProviderInput, ImageProvider, ImageProviderInput, ProviderResult } from "../infrastructure/providers/image-provider.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -14,6 +15,11 @@ mkdirSync(dataDir, { recursive: true });
 
 const tinyPngBase64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+const smokeOwner: DataOwner = {
+  id: "local",
+  label: "Smoke local",
+  isLocal: true
+};
 
 async function main(): Promise<void> {
   try {
@@ -26,8 +32,9 @@ async function main(): Promise<void> {
       const successProvider = new FakeImageProvider();
       const events: AgentServerEvent[] = [];
       const success = await executeGenerationPlan({
-        plan: planFixture(),
-        selectedReferences: [],
+	        plan: planFixture(),
+	        owner: smokeOwner,
+	        selectedReferences: [],
         mode: "execute",
         provider: successProvider,
         requestId: "smoke-execute",
@@ -53,8 +60,9 @@ async function main(): Promise<void> {
       } satisfies AgentSelectedCanvasReference;
       const selectedReferencePlan = selectedReferencePlanFixture(`asset:${selectedAssetId}`);
       const selectedReferenceRun = await executeGenerationPlan({
-        plan: selectedReferencePlan,
-        selectedReferences: [selectedReference],
+	        plan: selectedReferencePlan,
+	        owner: smokeOwner,
+	        selectedReferences: [selectedReference],
         mode: "execute",
         provider: selectedProvider,
         requestId: "smoke-selected-reference",
@@ -75,8 +83,9 @@ async function main(): Promise<void> {
         dataUrl: `data:image/png;base64,${tinyPngBase64}`
       } satisfies AgentSelectedCanvasReference;
       const localSelectedReferenceRun = await executeGenerationPlan({
-        plan: selectedReferencePlanFixture("local-only-reference"),
-        selectedReferences: [localSelectedReference],
+	        plan: selectedReferencePlanFixture("local-only-reference"),
+	        owner: smokeOwner,
+	        selectedReferences: [localSelectedReference],
         mode: "execute",
         provider: localSelectedProvider,
         requestId: "smoke-local-selected-reference",
@@ -90,8 +99,9 @@ async function main(): Promise<void> {
 
       const multiSelectedProvider = new FakeImageProvider();
       const multiSelectedRun = await executeGenerationPlan({
-        plan: multiSelectedReferencePlanFixture(),
-        selectedReferences: [
+	        plan: multiSelectedReferencePlanFixture(),
+	        owner: smokeOwner,
+	        selectedReferences: [
           localSelectedReference,
           {
             id: "selected-local-2",
@@ -117,8 +127,9 @@ async function main(): Promise<void> {
       const arbitraryCountPlan = arbitraryCountPlanFixture();
       expect(isExecutableGenerationPlan(arbitraryCountPlan), "single agent job can request an arbitrary count up to the plan cap");
       const arbitraryCountRun = await executeGenerationPlan({
-        plan: arbitraryCountPlan,
-        selectedReferences: [],
+	        plan: arbitraryCountPlan,
+	        owner: smokeOwner,
+	        selectedReferences: [],
         mode: "execute",
         provider: arbitraryCountProvider,
         requestId: "smoke-arbitrary-count",
@@ -141,8 +152,9 @@ async function main(): Promise<void> {
       retryPlan.status = "partial";
 
       const retry = await executeGenerationPlan({
-        plan: retryPlan,
-        selectedReferences: [],
+	        plan: retryPlan,
+	        owner: smokeOwner,
+	        selectedReferences: [],
         mode: "retry_failed",
         provider: retryProvider,
         requestId: "smoke-retry",
@@ -157,8 +169,9 @@ async function main(): Promise<void> {
 
       const failedProvider = new FakeImageProvider({ failGenerate: true });
       const blocked = await executeGenerationPlan({
-        plan: planFixture("plan-blocked"),
-        selectedReferences: [],
+	        plan: planFixture("plan-blocked"),
+	        owner: smokeOwner,
+	        selectedReferences: [],
         mode: "execute",
         provider: failedProvider,
         requestId: "smoke-blocked",

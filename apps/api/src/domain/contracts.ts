@@ -22,7 +22,14 @@ export {
 
 export type {
   AppConfig,
+  AccessTokenListResponse,
+  AccessTokenView,
+  AdminLoginRequest,
+  AdminMeResponse,
+  AuthLoginRequest,
+  AuthMeResponse,
   AuthStatusResponse,
+  AuthUser,
   AssetMetadataResponse,
   AssetCloudUploadStatus,
   CloudStorageProvider,
@@ -31,6 +38,8 @@ export type {
   CodexDevicePollStatus,
   CodexDeviceStartResponse,
   CodexLogoutResponse,
+  CreateAccessTokenRequest,
+  CreateAccessTokenResponse,
   EditImageRequest,
   GenerateImageRequest,
   GeneratedAsset,
@@ -113,5 +122,6 @@ export type {
   StorageConfigResponse,
   StorageTestResult,
   StylePresetId,
+  UpdateAccessTokenRequest,
   ValidationResult
 } from "@gpt-image-canvas/shared";

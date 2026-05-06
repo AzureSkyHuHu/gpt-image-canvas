@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import sharp from "sharp";
+import type { DataOwner } from "../auth/data-owner.js";
 import { readStoredAsset } from "../generation/image-generation.js";
 import { runtimePaths } from "../../infrastructure/runtime.js";
 
@@ -56,13 +57,17 @@ export function parsePreviewWidth(value: string | undefined): PreviewWidthResult
   };
 }
 
-export async function readStoredAssetPreview(assetId: string, width: number): Promise<StoredAssetPreview | undefined> {
-  const asset = await readStoredAsset(assetId);
+export async function readStoredAssetPreview(
+  owner: DataOwner,
+  assetId: string,
+  width: number
+): Promise<StoredAssetPreview | undefined> {
+  const asset = await readStoredAsset(owner, assetId);
   if (!asset) {
     return undefined;
   }
 
-  const previewPath = resolvePreviewPath(asset.file.id, width);
+  const previewPath = resolvePreviewPath(owner, asset.file.id, width);
   const cached = await readCachedPreview(previewPath);
   if (cached) {
     return {
@@ -99,8 +104,8 @@ async function readCachedPreview(filePath: string): Promise<Buffer | undefined> 
   }
 }
 
-function resolvePreviewPath(assetId: string, width: number): string {
-  const filePath = resolve(runtimePaths.assetPreviewsDir, `${safeFileSegment(assetId)}-${width}.webp`);
+function resolvePreviewPath(owner: DataOwner, assetId: string, width: number): string {
+  const filePath = resolve(runtimePaths.assetPreviewsDir, `${safeFileSegment(owner.id)}-${safeFileSegment(assetId)}-${width}.webp`);
   if (!isInsideDirectory(filePath, runtimePaths.assetPreviewsDir)) {
     throw new Error("Invalid preview cache path.");
   }

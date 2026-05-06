@@ -9,6 +9,7 @@ const dataDir = resolve(repoRoot, ".codex-temp", `agent-smoke-${process.pid}-${D
 process.env.DATA_DIR = dataDir;
 process.env.SQLITE_JOURNAL_MODE = "DELETE";
 process.env.SQLITE_LOCKING_MODE = "EXCLUSIVE";
+process.env.APP_AUTH_ENABLED = "false";
 
 mkdirSync(dataDir, { recursive: true });
 
@@ -224,7 +225,7 @@ class WebSocketProbe {
   private readonly waiters: Array<(value: Record<string, unknown>) => void> = [];
 
   constructor(readonly socket: WebSocket) {
-    socket.on("message", (data) => {
+    socket.on("message", (data: import("ws").RawData) => {
       const parsed = JSON.parse(rawDataToString(data)) as unknown;
       expect(isRecord(parsed), "WebSocket event is an object");
       const waiter = this.waiters.shift();

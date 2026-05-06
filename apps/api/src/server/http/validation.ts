@@ -20,7 +20,6 @@ import {
   type SaveStorageConfigRequest,
   type StylePresetId
 } from "../../domain/contracts.js";
-import { getStoredAssetFile } from "../../domain/generation/image-generation.js";
 import { isProviderSourceOrder } from "../../domain/providers/provider-config.js";
 import type { EditImageProviderInput, ImageProviderInput } from "../../infrastructure/providers/image-provider.js";
 import { errorResponse, type ErrorResponseBody, type ParseResult } from "./errors.js";
@@ -116,15 +115,6 @@ export function parseEditPayload(input: unknown): ParseResult<EditImageProviderI
   const referenceAssetIds = parseReferenceAssetIds(input, referenceImages.value.length);
   if (!referenceAssetIds.ok) {
     return referenceAssetIds;
-  }
-
-  for (const referenceAssetId of referenceAssetIds.value) {
-    if (!getStoredAssetFile(referenceAssetId)) {
-      return {
-        ok: false,
-        error: errorResponse("invalid_request", "找不到可记录的参考图像资源。")
-      };
-    }
   }
 
   return {

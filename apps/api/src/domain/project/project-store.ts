@@ -1,4 +1,4 @@
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type {
   GeneratedAsset,
   GalleryImageItem,
@@ -13,8 +13,10 @@ import type {
 } from "../contracts.js";
 import { db } from "../../infrastructure/database.js";
 import { assets, generationOutputs, generationRecords, generationReferenceAssets, projects } from "../../infrastructure/schema.js";
+import type { DataOwner } from "../auth/data-owner.js";
 
 export const DEFAULT_PROJECT_ID = "default";
+export const GENERATION_HISTORY_LIMIT = 100;
 const DEFAULT_PROJECT_NAME = "Default Project";
 const fallbackWarnings = new Set<string>();
 
@@ -31,20 +33,21 @@ function parseSnapshot(snapshotJson: string): unknown | null {
   return JSON.parse(snapshotJson) as unknown;
 }
 
-export function ensureDefaultProject(): void {
-  const existing = getDefaultProjectRow();
+export function ensureDefaultProject(owner: DataOwner): void {
+  const existing = getDefaultProjectRow(owner);
 
   if (existing) {
     return;
   }
-  if (defaultProjectRowExists()) {
+  if (defaultProjectRowExists(owner)) {
     return;
   }
 
   const createdAt = nowIso();
   db.insert(projects)
     .values({
-      id: DEFAULT_PROJECT_ID,
+      id: projectIdForOwner(owner),
+      ownerTokenId: owner.id,
       name: DEFAULT_PROJECT_NAME,
       snapshotJson: "null",
       createdAt,
@@ -53,11 +56,12 @@ export function ensureDefaultProject(): void {
     .run();
 }
 
-export function saveProjectSnapshot(input: ProjectSnapshotInput): ProjectState {
-  ensureDefaultProject();
+export function saveProjectSnapshot(owner: DataOwner, input: ProjectSnapshotInput): ProjectState {
+  ensureDefaultProject(owner);
 
   const updatedAt = nowIso();
-  const current = getDefaultProjectRow();
+  const current = getDefaultProjectRow(owner);
+  const projectId = projectIdForOwner(owner);
 
   db.update(projects)
     .set({
@@ -65,23 +69,24 @@ export function saveProjectSnapshot(input: ProjectSnapshotInput): ProjectState {
       snapshotJson: input.snapshotJson,
       updatedAt
     })
-    .where(eq(projects.id, DEFAULT_PROJECT_ID))
+    .where(and(eq(projects.id, projectId), eq(projects.ownerTokenId, owner.id)))
     .run();
 
-  return getProjectState();
+  return getProjectState(owner);
 }
 
-export function getProjectState(): ProjectState {
-  ensureDefaultProject();
+export function getProjectState(owner: DataOwner): ProjectState {
+  ensureDefaultProject(owner);
 
-  const project = getDefaultProjectRow();
+  const project = getDefaultProjectRow(owner);
+  const projectId = projectIdForOwner(owner);
 
   if (!project) {
     return {
-      id: DEFAULT_PROJECT_ID,
+      id: projectId,
       name: DEFAULT_PROJECT_NAME,
       snapshot: null,
-      history: getGenerationHistory(),
+      history: getGenerationHistory(owner),
       updatedAt: nowIso()
     };
   }
@@ -90,12 +95,12 @@ export function getProjectState(): ProjectState {
     id: project.id,
     name: project.name,
     snapshot: parseSnapshot(project.snapshotJson),
-    history: getGenerationHistory(),
+    history: getGenerationHistory(owner),
     updatedAt: project.updatedAt
   };
 }
 
-export function getGalleryImages(): GalleryResponse {
+export function getGalleryImages(owner: DataOwner): GalleryResponse {
   const rows = db
     .select({
       output: generationOutputs,
@@ -105,7 +110,14 @@ export function getGalleryImages(): GalleryResponse {
     .from(generationOutputs)
     .innerJoin(generationRecords, eq(generationOutputs.generationId, generationRecords.id))
     .innerJoin(assets, eq(generationOutputs.assetId, assets.id))
-    .where(eq(generationOutputs.status, "succeeded"))
+    .where(
+      and(
+        eq(generationOutputs.status, "succeeded"),
+        eq(generationOutputs.ownerTokenId, owner.id),
+        eq(generationRecords.ownerTokenId, owner.id),
+        eq(assets.ownerTokenId, owner.id)
+      )
+    )
     .orderBy(desc(generationOutputs.createdAt))
     .all();
 
@@ -129,14 +141,29 @@ export function getGalleryImages(): GalleryResponse {
   };
 }
 
-export function deleteGalleryOutput(outputId: string): boolean {
-  const result = db.delete(generationOutputs).where(eq(generationOutputs.id, outputId)).run();
+export function deleteGalleryOutput(owner: DataOwner, outputId: string): boolean {
+  const result = db
+    .delete(generationOutputs)
+    .where(and(eq(generationOutputs.id, outputId), eq(generationOutputs.ownerTokenId, owner.id)))
+    .run();
   return result.changes > 0;
 }
 
-function getDefaultProjectRow(): (typeof projects.$inferSelect) | undefined {
+export function getGalleryOutputAssetId(owner: DataOwner, outputId: string): string | undefined {
+  return db
+    .select({ assetId: generationOutputs.assetId })
+    .from(generationOutputs)
+    .where(and(eq(generationOutputs.id, outputId), eq(generationOutputs.ownerTokenId, owner.id)))
+    .get()?.assetId ?? undefined;
+}
+
+function getDefaultProjectRow(owner: DataOwner): (typeof projects.$inferSelect) | undefined {
   try {
-    return db.select().from(projects).where(eq(projects.id, DEFAULT_PROJECT_ID)).get();
+    return db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, projectIdForOwner(owner)), eq(projects.ownerTokenId, owner.id)))
+      .get();
   } catch (error) {
     warnOnce(
       "project-read-fallback",
@@ -146,18 +173,22 @@ function getDefaultProjectRow(): (typeof projects.$inferSelect) | undefined {
   }
 }
 
-function defaultProjectRowExists(): boolean {
+function defaultProjectRowExists(owner: DataOwner): boolean {
   try {
-    const row = db.select({ id: projects.id }).from(projects).where(eq(projects.id, DEFAULT_PROJECT_ID)).get();
+    const row = db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.id, projectIdForOwner(owner)), eq(projects.ownerTokenId, owner.id)))
+      .get();
     return Boolean(row);
   } catch {
     return true;
   }
 }
 
-function getGenerationHistory(): ApiGenerationRecord[] {
+function getGenerationHistory(owner: DataOwner): ApiGenerationRecord[] {
   try {
-    return readGenerationHistory();
+    return readGenerationHistory(owner);
   } catch (error) {
     warnOnce(
       "history-read-fallback",
@@ -186,8 +217,14 @@ function formatErrorSummary(error: unknown): string {
   return String(error);
 }
 
-function readGenerationHistory(): ApiGenerationRecord[] {
-  const records = db.select().from(generationRecords).orderBy(desc(generationRecords.createdAt)).limit(20).all();
+function readGenerationHistory(owner: DataOwner): ApiGenerationRecord[] {
+  const records = db
+    .select()
+    .from(generationRecords)
+    .where(eq(generationRecords.ownerTokenId, owner.id))
+    .orderBy(desc(generationRecords.createdAt))
+    .limit(GENERATION_HISTORY_LIMIT)
+    .all();
   if (records.length === 0) {
     return [];
   }
@@ -196,7 +233,7 @@ function readGenerationHistory(): ApiGenerationRecord[] {
   const outputs = db
     .select()
     .from(generationOutputs)
-    .where(inArray(generationOutputs.generationId, generationIds))
+    .where(and(eq(generationOutputs.ownerTokenId, owner.id), inArray(generationOutputs.generationId, generationIds)))
     .orderBy(generationOutputs.createdAt)
     .all();
   const referenceRows = db
@@ -212,7 +249,9 @@ function readGenerationHistory(): ApiGenerationRecord[] {
 
   const assetIds = outputs.flatMap((output) => (output.assetId ? [output.assetId] : []));
   const assetRows =
-    assetIds.length > 0 ? db.select().from(assets).where(inArray(assets.id, assetIds)).all() : [];
+    assetIds.length > 0
+      ? db.select().from(assets).where(and(eq(assets.ownerTokenId, owner.id), inArray(assets.id, assetIds))).all()
+      : [];
   const assetById = new Map(assetRows.map((asset) => [asset.id, asset]));
 
   const outputsByGenerationId = new Map<string, typeof outputs>();
@@ -265,6 +304,10 @@ function readGenerationHistory(): ApiGenerationRecord[] {
   });
 }
 
+function projectIdForOwner(owner: DataOwner): string {
+  return owner.isLocal ? DEFAULT_PROJECT_ID : `${DEFAULT_PROJECT_ID}:${owner.id}`;
+}
+
 function toGeneratedAsset(asset: (typeof assets.$inferSelect) | undefined): GeneratedAsset | undefined {
   if (!asset) {
     return undefined;
@@ -278,7 +321,8 @@ function toGeneratedAsset(asset: (typeof assets.$inferSelect) | undefined): Gene
     width: asset.width,
     height: asset.height,
     cloud:
-      asset.cloudProvider === "cos" && (asset.cloudStatus === "uploaded" || asset.cloudStatus === "failed")
+      (asset.cloudProvider === "cos" || asset.cloudProvider === "my_tools") &&
+      (asset.cloudStatus === "uploaded" || asset.cloudStatus === "failed")
         ? {
             provider: asset.cloudProvider,
             status: asset.cloudStatus,

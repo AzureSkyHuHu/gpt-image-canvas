@@ -7,6 +7,7 @@ import type {
   AgentServerEvent,
   GenerationPlan
 } from "../contracts.js";
+import type { DataOwner } from "../auth/data-owner.js";
 import { getUsableAgentLlmConfig } from "./config.js";
 import {
   executeGenerationPlan,
@@ -43,6 +44,7 @@ interface ActiveAgentRun {
 
 interface AgentSocketSession {
   connectionId: string;
+  owner: DataOwner;
   ws?: WSContext;
   activeRun?: ActiveAgentRun;
   plans: Map<string, StoredAgentGenerationPlan>;
@@ -64,8 +66,8 @@ interface MessageParseError {
 
 const sessions = new Map<string, AgentSocketSession>();
 
-export function createAgentWebSocketEvents(connectionId?: string, runId?: string): WSEvents {
-  const { resumeFailedRunId, session } = resolveAgentSocketSession(connectionId, runId);
+export function createAgentWebSocketEvents(owner: DataOwner, connectionId?: string, runId?: string): WSEvents {
+  const { resumeFailedRunId, session } = resolveAgentSocketSession(owner, connectionId, runId);
 
   return {
     onOpen(_event, ws) {
@@ -111,15 +113,17 @@ export function closeAllAgentSessions(reason = "server_shutdown"): void {
   sessions.clear();
 }
 
-function createAgentSocketSession(): AgentSocketSession {
+function createAgentSocketSession(owner: DataOwner): AgentSocketSession {
   return {
     connectionId: randomUUID(),
+    owner,
     plans: new Map(),
     pendingEvents: []
   };
 }
 
 function resolveAgentSocketSession(
+  owner: DataOwner,
   requestedConnectionId?: string,
   requestedRunId?: string
 ): { session: AgentSocketSession; resumeFailedRunId?: string } {
@@ -127,19 +131,21 @@ function resolveAgentSocketSession(
   const runId = requestedRunId?.trim();
   if (connectionId) {
     const existingSession = sessions.get(connectionId);
-    if (existingSession) {
+    if (existingSession && existingSession.owner.id === owner.id) {
       return { session: existingSession };
     }
   }
 
   if (runId) {
-    const activeRunSession = [...sessions.values()].find((session) => session.activeRun?.id === runId);
+    const activeRunSession = [...sessions.values()].find(
+      (session) => session.activeRun?.id === runId && session.owner.id === owner.id
+    );
     if (activeRunSession) {
       return { session: activeRunSession };
     }
   }
 
-  const session = createAgentSocketSession();
+  const session = createAgentSocketSession(owner);
   return {
     session,
     resumeFailedRunId: connectionId && runId ? runId : undefined
@@ -490,6 +496,7 @@ async function handleAgentPlanExecutionMessage(
     result = await executeGenerationPlan({
       ...storedPlan,
       mode: message.type === "execute_plan" ? "execute" : "retry_failed",
+      owner: session.owner,
       requestId: message.requestId,
       runId: activeRun.id,
       signal: activeRun.controller.signal,

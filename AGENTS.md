@@ -1,20 +1,28 @@
-# Repository Notes
+# 仓库说明
 
-- Use `pnpm install`; the package manager is pinned to `pnpm@9.14.2`.
-- Run `pnpm typecheck` and `pnpm build` before completing a story.
-- UI stories require browser verification against the running app.
-- The API app lives in `apps/api`; the web app lives in `apps/web`; shared contracts live in `packages/shared`.
-- Root scripts delegate to workspace packages: `pnpm dev`, `pnpm api:dev`, `pnpm web:dev`, `pnpm typecheck`, `pnpm build`, and `pnpm start`.
-- For browser verification, run `pnpm dev` and open the Vite web app, usually `http://localhost:5173`.
-- Documentation map for higher-quality agent work:
-  - Read `docs/PRODUCT_SENSE.md` before changing product behavior, onboarding, Gallery, provider configuration, or Agent workflows.
-  - Read `docs/DESIGN.md` and `docs/FRONTEND.md` before UI work in `apps/web`; read `docs/design-docs/interaction-quality.md` for UI polish and micro-interaction work.
-  - Read `docs/PLANS.md` before writing product specs, exec plans, Ralph PRDs, or multi-story task breakdowns.
-  - Read `docs/RELIABILITY.md` and `docs/SECURITY.md` before API, storage, provider, Docker, SQLite, asset, secret, or local data work.
-- After switching Node versions, rebuild native API dependencies if `better-sqlite3` reports a `NODE_MODULE_VERSION` mismatch: `pnpm --filter @gpt-image-canvas/api rebuild better-sqlite3 --stream`.
-- For Docker verification with real `.env` credentials, run `docker compose config --quiet --no-env-resolution`; plain `docker compose config` expands env files and can print secrets. When Docker is available, run `docker compose up --build` and check the app on the configured `PORT` (default `8787`).
-- Keep local agent scratch files under `.codex-temp/`; do not commit local run logs or machine-specific paths.
-- Do not commit `.env`, `.ralph`, `.codex-temp`, `data`, generated images, SQLite databases, or build output.
-- Secrets must only be read from `.env` or the runtime environment and must never be logged.
-- For Ralph-driven work, read `docs/ralph-execution.md` before creating or running a task. Keep Ralph PRDs under `.agents/tasks/`, keep runtime state under `.ralph/`, and keep extra wrapper logs under `.codex-temp/`.
-- When invoking Ralph on Windows, prefer setting `PRD_PATH` and running `.agents/ralph/loop.sh` through Git Bash; avoid CLI flags that rewrite Windows paths unexpectedly.
+- 使用 `pnpm install` 安装依赖；包管理器固定为 `pnpm@9.14.2`。
+- Node 相关工作使用 dnmp 中已有的 `node` 容器。`node`、`pnpm`、`npm`、typecheck、build 和开发服务器验证都在该容器内执行；仓库通常通过 `/opt/project -> /www` 挂载，对应容器路径为 `/www/python_project/gpt-image-canvas`。
+- 不要自行启动临时 Node 容器，也不要使用宿主机 Node、切换宿主机 Node 版本或用宿主机 `pnpm` 替代容器验证；宿主机 Node 可能版本不对或原生模块 ABI 不匹配。
+- 如果 Docker 或 dnmp 的 `node` 容器不可用，提醒用户开启 Docker / 启动 dnmp `node` 容器并等待用户处理；不要自行做主切换到其他 Node 运行时。
+- 完成一个 story 前运行 `pnpm typecheck` 和 `pnpm build`。
+- 涉及 UI 的 story 必须对运行中的应用做浏览器验证。
+- API 应用位于 `apps/api`；Web 应用位于 `apps/web`；共享契约位于 `packages/shared`。
+- 根脚本会转发到 workspace 包：`pnpm dev`、`pnpm api:dev`、`pnpm web:dev`、`pnpm typecheck`、`pnpm build` 和 `pnpm start`。
+- 区分验证环境：
+  - 工具链验证（`pnpm install`、`pnpm typecheck`、`pnpm build`、smoke 脚本）走 dnmp 中已有的 `node` 容器。
+  - 浏览器实机验证优先打开项目自己的运行容器 `gpt_image_canvas_app` 暴露的 `http://localhost:8787`；该容器是一体化应用入口，不需要为了实机验证再启动临时 Node 容器。
+  - 只有当需要验证当前工作区未提交改动且 `gpt_image_canvas_app` 未包含这些改动时，才考虑重建/重启现有项目 app 容器，或在 dnmp `node` 容器里启动开发服务；执行前先说明原因，不要自行启动额外临时 Node 容器。
+- 为了让 agent 工作质量更稳定，按改动类型阅读文档：
+  - 修改产品行为、新手引导、Gallery、provider 配置或 Agent 工作流前，阅读 `docs/PRODUCT_SENSE.md`。
+  - 修改 `apps/web` 中的 UI 前，阅读 `docs/DESIGN.md` 和 `docs/FRONTEND.md`；做 UI polish 或微交互时，阅读 `docs/design-docs/interaction-quality.md`。
+  - 编写产品规格、执行计划、Ralph PRD 或多 story 拆解前，阅读 `docs/PLANS.md`。
+  - 修改 API、存储、provider、Docker、SQLite、资产、密钥或本地数据相关逻辑前，阅读 `docs/RELIABILITY.md` 和 `docs/SECURITY.md`。
+- 如果切换 Node 版本后 `better-sqlite3` 报 `NODE_MODULE_VERSION` 不匹配，重建原生 API 依赖：`pnpm --filter @gpt-image-canvas/api rebuild better-sqlite3 --stream`。
+- 使用真实 `.env` 凭证做 Docker 验证时，运行 `docker compose config --quiet --no-env-resolution`；普通 `docker compose config` 会展开 env 文件，可能打印密钥。Docker 可用时，运行 `docker compose up --build`，并在配置的 `PORT`（默认 `8787`）检查应用。
+- 本地 agent 临时文件放在 `.codex-temp/`；不要提交本地运行日志或机器特定路径。
+- 不要提交 `.env`、`.ralph`、`.codex-temp`、`data`、生成图片、SQLite 数据库或构建产物。
+- 密钥只能从 `.env` 或运行时环境读取，绝不能写入日志。
+- 面向仓库的计划文档、迁移文档和实现说明使用中文，除非用户明确要求其他语言。
+- 本仓库中创建的 git commit message、分支说明和其他 git-facing 注释使用中文，除非用户明确要求其他语言。
+- Ralph 驱动的工作开始前，阅读 `docs/ralph-execution.md`。Ralph PRD 放在 `.agents/tasks/`，运行时状态放在 `.ralph/`，额外 wrapper 日志放在 `.codex-temp/`。
+- 在 Windows 上调用 Ralph 时，优先设置 `PRD_PATH` 并通过 Git Bash 运行 `.agents/ralph/loop.sh`；避免使用会意外重写 Windows 路径的 CLI flags。

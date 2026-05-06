@@ -41,6 +41,7 @@ function isSharedMemoryOpenError(error: unknown): boolean {
 sqlite.exec(`
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY NOT NULL,
+  owner_token_id TEXT NOT NULL DEFAULT 'local',
   name TEXT NOT NULL,
   snapshot_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE TABLE IF NOT EXISTS assets (
   id TEXT PRIMARY KEY NOT NULL,
+  owner_token_id TEXT NOT NULL DEFAULT 'local',
   file_name TEXT NOT NULL,
   relative_path TEXT NOT NULL,
   mime_type TEXT NOT NULL,
@@ -68,6 +70,7 @@ CREATE TABLE IF NOT EXISTS assets (
 
 CREATE TABLE IF NOT EXISTS storage_configs (
   id TEXT PRIMARY KEY NOT NULL,
+  owner_token_id TEXT NOT NULL DEFAULT 'local',
   provider TEXT NOT NULL,
   enabled INTEGER NOT NULL,
   secret_id TEXT,
@@ -101,6 +104,20 @@ CREATE TABLE IF NOT EXISTS agent_llm_configs (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS access_tokens (
+  id TEXT PRIMARY KEY NOT NULL,
+  label TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  token_preview TEXT NOT NULL,
+  upstream_api_key TEXT NOT NULL,
+  upstream_api_key_preview TEXT NOT NULL,
+  upstream_base_url TEXT,
+  upstream_model TEXT,
+  enabled INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS codex_oauth_tokens (
   id TEXT PRIMARY KEY NOT NULL,
   access_token TEXT,
@@ -118,6 +135,7 @@ CREATE TABLE IF NOT EXISTS codex_oauth_tokens (
 
 CREATE TABLE IF NOT EXISTS generation_records (
   id TEXT PRIMARY KEY NOT NULL,
+  owner_token_id TEXT NOT NULL DEFAULT 'local',
   mode TEXT NOT NULL,
   prompt TEXT NOT NULL,
   effective_prompt TEXT NOT NULL,
@@ -135,6 +153,7 @@ CREATE TABLE IF NOT EXISTS generation_records (
 
 CREATE TABLE IF NOT EXISTS generation_outputs (
   id TEXT PRIMARY KEY NOT NULL,
+  owner_token_id TEXT NOT NULL DEFAULT 'local',
   generation_id TEXT NOT NULL REFERENCES generation_records(id) ON DELETE CASCADE,
   status TEXT NOT NULL,
   asset_id TEXT REFERENCES assets(id),
@@ -155,6 +174,20 @@ CREATE INDEX IF NOT EXISTS generation_outputs_generation_id_idx ON generation_ou
 CREATE INDEX IF NOT EXISTS generation_outputs_asset_id_idx ON generation_outputs(asset_id);
 CREATE INDEX IF NOT EXISTS generation_reference_assets_generation_id_idx ON generation_reference_assets(generation_id);
 CREATE INDEX IF NOT EXISTS generation_reference_assets_asset_id_idx ON generation_reference_assets(asset_id);
+CREATE INDEX IF NOT EXISTS access_tokens_token_hash_idx ON access_tokens(token_hash);
+`);
+
+ensureColumn("projects", "owner_token_id", "owner_token_id TEXT NOT NULL DEFAULT 'local'");
+ensureColumn("assets", "owner_token_id", "owner_token_id TEXT NOT NULL DEFAULT 'local'");
+ensureColumn("storage_configs", "owner_token_id", "owner_token_id TEXT NOT NULL DEFAULT 'local'");
+ensureColumn("generation_records", "owner_token_id", "owner_token_id TEXT NOT NULL DEFAULT 'local'");
+ensureColumn("generation_outputs", "owner_token_id", "owner_token_id TEXT NOT NULL DEFAULT 'local'");
+sqlite.exec(`
+CREATE INDEX IF NOT EXISTS projects_owner_token_id_idx ON projects(owner_token_id);
+CREATE INDEX IF NOT EXISTS assets_owner_token_id_idx ON assets(owner_token_id);
+CREATE INDEX IF NOT EXISTS storage_configs_owner_token_id_idx ON storage_configs(owner_token_id);
+CREATE INDEX IF NOT EXISTS generation_records_owner_created_at_idx ON generation_records(owner_token_id, created_at);
+CREATE INDEX IF NOT EXISTS generation_outputs_owner_created_at_idx ON generation_outputs(owner_token_id, created_at);
 `);
 
 ensureColumn("assets", "cloud_provider", "cloud_provider TEXT");

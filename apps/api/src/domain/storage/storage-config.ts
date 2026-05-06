@@ -1,13 +1,22 @@
 import { eq } from "drizzle-orm";
 import type { SaveStorageConfigRequest, StorageConfigResponse, StorageTestResult } from "../contracts.js";
 import { db } from "../../infrastructure/database.js";
-import { CosAssetStorageAdapter, normalizeKeyPrefix, type CosStorageAdapterConfig, storageErrorMessage } from "../../infrastructure/storage/asset-storage.js";
+import {
+  CosAssetStorageAdapter,
+  MyToolsAssetStorageAdapter,
+  normalizeKeyPrefix,
+  type CosStorageAdapterConfig,
+  type MyToolsStorageAdapterConfig,
+  storageErrorMessage
+} from "../../infrastructure/storage/asset-storage.js";
 import { storageConfigs } from "../../infrastructure/schema.js";
 
 const ACTIVE_STORAGE_CONFIG_ID = "active";
 const DEFAULT_COS_BUCKET = process.env.COS_DEFAULT_BUCKET?.trim() || "source-1253253332";
 const DEFAULT_COS_REGION = process.env.COS_DEFAULT_REGION?.trim() || "ap-nanjing";
 const DEFAULT_COS_KEY_PREFIX = process.env.COS_DEFAULT_KEY_PREFIX?.trim() || "gpt-image-canvas/assets";
+const MY_TOOLS_BASE_URL = process.env.MY_TOOLS_BASE_URL?.trim() || "";
+const MY_TOOLS_SHARED_SECRET = process.env.MY_TOOLS_SHARED_SECRET?.trim() || "";
 
 type StorageConfigRow = typeof storageConfigs.$inferSelect;
 
@@ -30,6 +39,28 @@ export function getActiveCosStorageConfig(): CosStorageAdapterConfig | undefined
   };
 }
 
+export function getActiveCloudStorageProvider(): "cos" | "my_tools" | undefined {
+  const configured = process.env.CLOUD_STORAGE_PROVIDER?.trim().toLowerCase();
+  if (configured === "my_tools") {
+    return getActiveMyToolsStorageConfig() ? "my_tools" : undefined;
+  }
+  if (configured === "cos") {
+    return getActiveCosStorageConfig() ? "cos" : undefined;
+  }
+  return getActiveCosStorageConfig() ? "cos" : undefined;
+}
+
+export function getActiveMyToolsStorageConfig(): MyToolsStorageAdapterConfig | undefined {
+  if (!MY_TOOLS_BASE_URL || !MY_TOOLS_SHARED_SECRET) {
+    return undefined;
+  }
+
+  return {
+    baseUrl: MY_TOOLS_BASE_URL,
+    sharedSecret: MY_TOOLS_SHARED_SECRET
+  };
+}
+
 export async function saveStorageConfig(input: SaveStorageConfigRequest): Promise<StorageConfigResponse> {
   const now = new Date().toISOString();
   const existing = getStorageConfigRow();
@@ -37,6 +68,7 @@ export async function saveStorageConfig(input: SaveStorageConfigRequest): Promis
   if (!input.enabled) {
     upsertStorageConfig({
       id: ACTIVE_STORAGE_CONFIG_ID,
+      ownerTokenId: "local",
       provider: "cos",
       enabled: 0,
       secretId: existing?.secretId ?? null,
@@ -55,6 +87,7 @@ export async function saveStorageConfig(input: SaveStorageConfigRequest): Promis
 
   upsertStorageConfig({
     id: ACTIVE_STORAGE_CONFIG_ID,
+    ownerTokenId: "local",
     provider: "cos",
     enabled: 1,
     secretId: parsed.secretId,
@@ -71,6 +104,18 @@ export async function saveStorageConfig(input: SaveStorageConfigRequest): Promis
 
 export async function testStorageConfig(input: SaveStorageConfigRequest): Promise<StorageTestResult> {
   try {
+    if (input.provider === "my_tools") {
+      const config = getActiveMyToolsStorageConfig();
+      if (!config) {
+        throw new Error("MY_TOOLS_BASE_URL and MY_TOOLS_SHARED_SECRET are required.");
+      }
+      await new MyToolsAssetStorageAdapter(config).testConfig();
+      return {
+        ok: true,
+        message: "my_tools storage is available."
+      };
+    }
+
     const parsed = resolveCosConfigForSave(input, getStorageConfigRow());
     await new CosAssetStorageAdapter(parsed).testConfig();
     return {
@@ -110,7 +155,7 @@ function upsertStorageConfig(row: StorageConfigRow): void {
 
 function resolveCosConfigForSave(input: SaveStorageConfigRequest, existing: StorageConfigRow | undefined): CosStorageAdapterConfig {
   if (input.provider !== "cos") {
-    throw new Error("Only Tencent COS storage is supported in this version.");
+    throw new Error("Only Tencent COS can be saved from the UI in this version.");
   }
 
   const cos = input.cos;

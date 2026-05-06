@@ -588,21 +588,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isLoadingGenerationPlaceholderRecord(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    value.typeName === "shape" &&
-    value.type === GENERATION_PLACEHOLDER_TYPE &&
-    isRecord(value.props) &&
-    value.props.status === "loading"
-  );
+function isGenerationPlaceholderSnapshotRecord(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && value.typeName === "shape" && value.type === GENERATION_PLACEHOLDER_TYPE;
 }
 
-function isAgentPlanNodeSnapshotRecord(value: unknown): value is Record<string, unknown> {
-  return isRecord(value) && value.typeName === "shape" && value.type === AGENT_PLAN_NODE_TYPE;
-}
-
-function filterLoadingPlaceholdersFromStoreSnapshot<TSnapshot>(snapshot: TSnapshot): TSnapshot {
+function filterGenerationPlaceholdersFromStoreSnapshot<TSnapshot>(snapshot: TSnapshot): TSnapshot {
   if (!isRecord(snapshot) || !isRecord(snapshot.store)) {
     return snapshot;
   }
@@ -610,12 +600,7 @@ function filterLoadingPlaceholdersFromStoreSnapshot<TSnapshot>(snapshot: TSnapsh
   let changed = false;
   const nextStore: Record<string, unknown> = {};
   for (const [id, record] of Object.entries(snapshot.store)) {
-    if (isLoadingGenerationPlaceholderRecord(record)) {
-      changed = true;
-      continue;
-    }
-
-    if (isAgentPlanNodeSnapshotRecord(record)) {
+    if (isGenerationPlaceholderSnapshotRecord(record)) {
       changed = true;
       continue;
     }
@@ -626,17 +611,17 @@ function filterLoadingPlaceholdersFromStoreSnapshot<TSnapshot>(snapshot: TSnapsh
   return changed ? ({ ...snapshot, store: nextStore } as TSnapshot) : snapshot;
 }
 
-function filterLoadingPlaceholdersFromSnapshot<TSnapshot>(snapshot: TSnapshot): TSnapshot {
+function filterGenerationPlaceholdersFromSnapshot<TSnapshot>(snapshot: TSnapshot): TSnapshot {
   if (!isRecord(snapshot)) {
     return snapshot;
   }
 
   if (isRecord(snapshot.document)) {
-    const document = filterLoadingPlaceholdersFromStoreSnapshot(snapshot.document);
+    const document = filterGenerationPlaceholdersFromStoreSnapshot(snapshot.document);
     return document === snapshot.document ? snapshot : ({ ...snapshot, document } as TSnapshot);
   }
 
-  return filterLoadingPlaceholdersFromStoreSnapshot(snapshot);
+  return filterGenerationPlaceholdersFromStoreSnapshot(snapshot);
 }
 
 function coerceStylePresetId(value: string): StylePresetId {
@@ -2784,7 +2769,7 @@ export function App() {
         }
 
         const project = (await response.json()) as ProjectState;
-        const snapshot = filterLoadingPlaceholdersFromSnapshot(project.snapshot);
+        const snapshot = filterGenerationPlaceholdersFromSnapshot(project.snapshot);
         if (isPersistedSnapshot(snapshot)) {
           setProjectSnapshot(snapshot);
         }
@@ -3237,7 +3222,7 @@ export function App() {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            snapshot: filterLoadingPlaceholdersFromSnapshot(editor.getSnapshot())
+            snapshot: editor.getSnapshot()
           })
         });
 

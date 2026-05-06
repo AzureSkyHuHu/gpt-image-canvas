@@ -16,6 +16,7 @@ import {
   type OutputFormat,
   type ReferenceImageInput
 } from "../contracts.js";
+import type { DataOwner } from "../auth/data-owner.js";
 import { readStoredAsset, runReferenceImageGeneration, runTextToImageGeneration } from "../generation/image-generation.js";
 import { createConfiguredImageProvider } from "../providers/image-provider-selection.js";
 import type { ImageProvider, ImageProviderInput } from "../../infrastructure/providers/image-provider.js";
@@ -31,6 +32,7 @@ export type AgentPlanExecutionMode = "execute" | "retry_failed";
 
 export interface AgentPlanExecutionInput extends StoredAgentGenerationPlan {
   mode: AgentPlanExecutionMode;
+  owner: DataOwner;
   provider?: ImageProvider;
   requestId?: string;
   runId: string;
@@ -201,13 +203,14 @@ async function executeGenerationJob(input: AgentPlanExecutionInput & {
 
   try {
     throwIfAborted(input.signal);
-    const references = await resolveJobReferences(input.plan, input.job, input.selectedReferencesByKey);
+    const references = await resolveJobReferences(input.owner, input.plan, input.job, input.selectedReferencesByKey);
     throwIfAborted(input.signal);
 
     const request = createJobImageProviderInput(input.plan, input.job);
     const response =
       references.referenceImages.length > 0
         ? await runReferenceImageGeneration(
+            input.owner,
             {
               ...request,
               referenceImages: references.referenceImages,
@@ -217,7 +220,7 @@ async function executeGenerationJob(input: AgentPlanExecutionInput & {
             input.provider,
             input.signal
           )
-        : await runTextToImageGeneration(request, input.provider, input.signal);
+        : await runTextToImageGeneration(input.owner, request, input.provider, input.signal);
     throwIfAborted(input.signal);
 
     input.job.outputs = response.record.outputs;
@@ -279,6 +282,7 @@ function createJobImageProviderInput(plan: GenerationPlan, job: GenerationJob): 
 }
 
 async function resolveJobReferences(
+  owner: DataOwner,
   plan: GenerationPlan,
   job: GenerationJob,
   selectedReferencesByKey: Map<string, AgentSelectedCanvasReference>
@@ -287,7 +291,7 @@ async function resolveJobReferences(
   const referenceAssetIds: string[] = [];
 
   for (const reference of job.references.slice(0, 3)) {
-    const resolved = await resolveGenerationReference(plan, reference, selectedReferencesByKey);
+    const resolved = await resolveGenerationReference(owner, plan, reference, selectedReferencesByKey);
     referenceImages.push(resolved.referenceImage);
     if (resolved.assetId) {
       referenceAssetIds.push(resolved.assetId);
@@ -301,6 +305,7 @@ async function resolveJobReferences(
 }
 
 async function resolveGenerationReference(
+  owner: DataOwner,
   plan: GenerationPlan,
   reference: GenerationReference,
   selectedReferencesByKey: Map<string, AgentSelectedCanvasReference>
@@ -319,7 +324,7 @@ async function resolveGenerationReference(
 
     const assetId = selected?.assetId ?? reference.assetId;
     if (assetId) {
-      const stored = await storedAssetReference(assetId);
+      const stored = await storedAssetReference(owner, assetId);
       if (stored) {
         return stored;
       }
@@ -339,7 +344,7 @@ async function resolveGenerationReference(
     throw new Error(`Generated reference "${reference.jobId ?? "unknown"}" has no available output.`);
   }
 
-  const stored = await storedAssetReference(assetId);
+  const stored = await storedAssetReference(owner, assetId);
   if (!stored) {
     throw new Error(`Generated reference asset "${assetId}" is not available.`);
   }
@@ -347,9 +352,12 @@ async function resolveGenerationReference(
   return stored;
 }
 
-async function storedAssetReference(assetId: string): Promise<{ referenceImage: ReferenceImageInput; assetId: string } | undefined> {
+async function storedAssetReference(
+  owner: DataOwner,
+  assetId: string
+): Promise<{ referenceImage: ReferenceImageInput; assetId: string } | undefined> {
   for (const candidateAssetId of storedAssetIdCandidates(assetId)) {
-    const stored = await readStoredAsset(candidateAssetId);
+    const stored = await readStoredAsset(owner, candidateAssetId);
     if (!stored) {
       continue;
     }

@@ -1,0 +1,356 @@
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import type { Context, MiddlewareHandler } from "hono";
+import type { AuthMeResponse, AuthUser } from "../../domain/contracts.js";
+import {
+  authenticateAccessToken,
+  getAccessTokenPrincipal,
+  type AccessTokenPrincipal
+} from "../../domain/auth/access-token-store.js";
+import { LOCAL_DATA_OWNER_ID, type DataOwner } from "../../domain/auth/data-owner.js";
+import { accessControlConfig } from "../../infrastructure/runtime.js";
+import { errorResponse } from "./errors.js";
+
+export interface RequestAuthState {
+  user?: AccessTokenPrincipal;
+  isAdmin: boolean;
+}
+
+export type AuthVariables = {
+  auth: RequestAuthState;
+};
+
+type SessionKind = "access" | "admin";
+
+interface SessionPayload {
+  kind: SessionKind;
+  subject: string;
+  expiresAt: number;
+}
+
+const ACCESS_COOKIE_NAME = "gic_access_session";
+const ADMIN_COOKIE_NAME = "gic_admin_session";
+
+export function isAuthEnabled(): boolean {
+  return accessControlConfig.enabled;
+}
+
+export function authConfigWarnings(): string[] {
+  if (!isAuthEnabled()) {
+    return [];
+  }
+
+  const warnings: string[] = [];
+  if (!accessControlConfig.adminPassword) {
+    warnings.push("APP_AUTH_ENABLED=true but APP_ADMIN_PASSWORD is empty; admin token management is disabled.");
+  }
+  return warnings;
+}
+
+export function assertAuthConfigSafe(): void {
+  if (!isAuthEnabled()) {
+    return;
+  }
+
+  if (accessControlConfig.sessionSecret.length < 32) {
+    throw new Error("APP_AUTH_ENABLED=true requires APP_SESSION_SECRET to be at least 32 characters.");
+  }
+}
+
+export function authMiddleware(): MiddlewareHandler<{ Variables: AuthVariables }> {
+  return async (c, next) => {
+    const auth = resolveAuthState(c);
+    c.set("auth", auth);
+
+    if (isUnsafeMethod(c.req.method) && !passesSameOriginCheck(c)) {
+      return c.json(errorResponse("same_origin_required", "请求来源无效，请从当前站点重试。"), 403);
+    }
+
+    if (!isAuthEnabled()) {
+      return next();
+    }
+
+    const path = new URL(c.req.url).pathname;
+    if (isPublicApiPath(path)) {
+      return next();
+    }
+
+    if (path.startsWith("/api/admin")) {
+      if (!auth.isAdmin) {
+        return c.json(errorResponse("admin_auth_required", "请先以管理员身份登录。"), 401);
+      }
+      return next();
+    }
+
+    if (path.startsWith("/api/") && !auth.user && !auth.isAdmin) {
+      return c.json(errorResponse("auth_required", "请输入访问 token 后继续。"), 401);
+    }
+
+    return next();
+  };
+}
+
+export function authMe(c: Context): AuthMeResponse {
+  const auth = requestAuth(c);
+  return {
+    authEnabled: isAuthEnabled(),
+    authenticated: Boolean(auth?.user || auth?.isAdmin),
+    user: auth?.user ? toAuthUser(auth.user) : auth?.isAdmin ? { id: LOCAL_DATA_OWNER_ID, label: "Admin local" } : undefined
+  };
+}
+
+export function adminMe(c: Context) {
+  const auth = requestAuth(c);
+  return {
+    authEnabled: isAuthEnabled(),
+    authenticated: Boolean(auth?.isAdmin)
+  };
+}
+
+export function loginWithAccessToken(c: Context, token: string): AuthMeResponse | undefined {
+  if (!isAuthEnabled()) {
+    return {
+      authEnabled: false,
+      authenticated: true,
+      user: {
+        id: LOCAL_DATA_OWNER_ID,
+        label: "Local"
+      }
+    };
+  }
+
+  const principal = authenticateAccessToken(token);
+  if (!principal) {
+    return undefined;
+  }
+
+  setSessionCookie(c, ACCESS_COOKIE_NAME, {
+    kind: "access",
+    subject: principal.id,
+    expiresAt: sessionExpiresAt()
+  });
+
+  return {
+    authEnabled: true,
+    authenticated: true,
+    user: toAuthUser(principal)
+  };
+}
+
+export function loginAsAdmin(c: Context, password: string): boolean {
+  if (!isAuthEnabled() || !accessControlConfig.adminPassword) {
+    return false;
+  }
+  if (!safeEqual(password, accessControlConfig.adminPassword)) {
+    return false;
+  }
+
+  setSessionCookie(c, ADMIN_COOKIE_NAME, {
+    kind: "admin",
+    subject: "admin",
+    expiresAt: sessionExpiresAt()
+  });
+  return true;
+}
+
+export function logoutAccess(c: Context): void {
+  clearSessionCookie(c, ACCESS_COOKIE_NAME);
+}
+
+export function logoutAdmin(c: Context): void {
+  clearSessionCookie(c, ADMIN_COOKIE_NAME);
+}
+
+export function currentAccessPrincipal(c: Context): AccessTokenPrincipal | undefined {
+  if (!isAuthEnabled()) {
+    return undefined;
+  }
+  return requestAuth(c).user;
+}
+
+export function requestAuth(c: Context): RequestAuthState {
+  return c.get("auth" as never) as RequestAuthState;
+}
+
+export function currentDataOwner(c: Context): DataOwner {
+  const auth = requestAuth(c);
+  if (!isAuthEnabled() || auth?.isAdmin) {
+    return {
+      id: LOCAL_DATA_OWNER_ID,
+      label: auth?.isAdmin ? "Admin local" : "Local",
+      isLocal: true
+    };
+  }
+
+  const principal = currentAccessPrincipal(c);
+  if (!principal) {
+    throw new Error("Missing access token owner.");
+  }
+
+  return {
+    id: principal.id,
+    label: principal.label,
+    isLocal: false
+  };
+}
+
+function resolveAuthState(c: Context): RequestAuthState {
+  if (!isAuthEnabled()) {
+    return {
+      isAdmin: true
+    };
+  }
+
+  const accessSession = readSessionCookie(c, ACCESS_COOKIE_NAME);
+  const user =
+    accessSession?.kind === "access" && accessSession.subject ? getAccessTokenPrincipal(accessSession.subject) : undefined;
+  const adminSession = readSessionCookie(c, ADMIN_COOKIE_NAME);
+
+  return {
+    user,
+    isAdmin: adminSession?.kind === "admin" && adminSession.subject === "admin"
+  };
+}
+
+function isPublicApiPath(path: string): boolean {
+  return (
+    path === "/api/health" ||
+    path === "/api/auth/status" ||
+    path === "/api/auth/me" ||
+    path === "/api/auth/login" ||
+    path === "/api/auth/logout" ||
+    path === "/api/admin/login" ||
+    path === "/api/admin/logout" ||
+    path === "/api/admin/me"
+  );
+}
+
+function isUnsafeMethod(method: string): boolean {
+  return method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+}
+
+function passesSameOriginCheck(c: Context): boolean {
+  const secFetchSite = c.req.header("sec-fetch-site")?.trim().toLowerCase();
+  if (secFetchSite === "cross-site") {
+    return false;
+  }
+
+  const origin = c.req.header("origin");
+  if (!origin) {
+    return true;
+  }
+
+  if (secFetchSite === "same-origin") {
+    return true;
+  }
+
+  const originHost = parseHeaderUrlHost(origin);
+  const requestHost = c.req.header("x-forwarded-host") ?? c.req.header("host") ?? parseHeaderUrlHost(c.req.url);
+  return Boolean(originHost && requestHost && normalizeHost(originHost) === normalizeHost(requestHost));
+}
+
+function parseHeaderUrlHost(value: string): string | undefined {
+  try {
+    return new URL(value).host;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeHost(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function readSessionCookie(c: Context, name: string): SessionPayload | undefined {
+  const rawCookie = c.req.header("cookie");
+  const cookieValue = parseCookie(rawCookie)[name];
+  if (!cookieValue) {
+    return undefined;
+  }
+
+  const payload = verifySignedValue(cookieValue);
+  if (!payload || payload.expiresAt < Date.now()) {
+    return undefined;
+  }
+  return payload;
+}
+
+function setSessionCookie(c: Context, name: string, payload: SessionPayload): void {
+  const secure = new URL(c.req.url).protocol === "https:";
+  const maxAge = Math.max(1, Math.floor((payload.expiresAt - Date.now()) / 1000));
+  c.header(
+    "Set-Cookie",
+    `${name}=${signPayload(payload)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? "; Secure" : ""}`,
+    {
+      append: true
+    }
+  );
+}
+
+function clearSessionCookie(c: Context, name: string): void {
+  c.header("Set-Cookie", `${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`, {
+    append: true
+  });
+}
+
+function parseCookie(cookieHeader: string | undefined): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  for (const item of (cookieHeader ?? "").split(";")) {
+    const [rawName, ...rawValue] = item.trim().split("=");
+    if (!rawName || rawValue.length === 0) {
+      continue;
+    }
+    cookies[rawName] = decodeURIComponent(rawValue.join("="));
+  }
+  return cookies;
+}
+
+function signPayload(payload: SessionPayload): string {
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  return `${encoded}.${signature(encoded)}`;
+}
+
+function verifySignedValue(value: string): SessionPayload | undefined {
+  const [encoded, actualSignature] = value.split(".", 2);
+  if (!encoded || !actualSignature || !safeEqual(signature(encoded), actualSignature)) {
+    return undefined;
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as SessionPayload;
+    if (
+      (payload.kind !== "access" && payload.kind !== "admin") ||
+      typeof payload.subject !== "string" ||
+      typeof payload.expiresAt !== "number"
+    ) {
+      return undefined;
+    }
+    return payload;
+  } catch {
+    return undefined;
+  }
+}
+
+function signature(value: string): string {
+  return createHmac("sha256", accessControlConfig.sessionSecret).update(value).digest("base64url");
+}
+
+function sessionExpiresAt(): number {
+  return Date.now() + accessControlConfig.sessionDays * 24 * 60 * 60 * 1000;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const aBytes = Buffer.from(a);
+  const bBytes = Buffer.from(b);
+  return aBytes.length === bBytes.length && timingSafeEqual(aBytes, bBytes);
+}
+
+function toAuthUser(principal: AccessTokenPrincipal): AuthUser {
+  return {
+    id: principal.id,
+    label: principal.label
+  };
+}
+
+export function generateSessionSecret(): string {
+  return randomBytes(32).toString("base64url");
+}

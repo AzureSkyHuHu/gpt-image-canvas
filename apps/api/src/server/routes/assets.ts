@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 import { parsePreviewWidth, readStoredAssetPreview } from "../../domain/assets/preview.js";
 import { readStoredAsset, readStoredAssetMetadata } from "../../domain/generation/image-generation.js";
+import { currentDataOwner } from "../http/access-control.js";
 import { downloadFileName, errorResponse } from "../http/errors.js";
 
 export function registerAssetRoutes(app: Hono): void {
@@ -10,7 +11,7 @@ export function registerAssetRoutes(app: Hono): void {
       return c.json(errorResponse(parsedWidth.code, parsedWidth.message), 400);
     }
 
-    const preview = await readStoredAssetPreview(c.req.param("id"), parsedWidth.width);
+    const preview = await readStoredAssetPreview(currentDataOwner(c), c.req.param("id"), parsedWidth.width);
     if (!preview) {
       return c.json(errorResponse("not_found", "Asset not found."), 404);
     }
@@ -26,7 +27,7 @@ export function registerAssetRoutes(app: Hono): void {
   });
 
   app.get("/api/assets/:id/metadata", async (c) => {
-    const metadata = await readStoredAssetMetadata(c.req.param("id"));
+    const metadata = await readStoredAssetMetadata(currentDataOwner(c), c.req.param("id"));
     if (!metadata) {
       return c.json(errorResponse("not_found", "Asset not found."), 404);
     }
@@ -35,7 +36,7 @@ export function registerAssetRoutes(app: Hono): void {
   });
 
   app.get("/api/assets/:id/download", async (c) => {
-    const asset = await readStoredAsset(c.req.param("id"));
+    const asset = await readStoredAsset(currentDataOwner(c), c.req.param("id"));
     if (!asset) {
       return c.json(errorResponse("not_found", "找不到请求的图像资源。"), 404);
     }
@@ -51,7 +52,7 @@ export function registerAssetRoutes(app: Hono): void {
   });
 
   app.get("/api/assets/:id", async (c) => {
-    const asset = await readStoredAsset(c.req.param("id"));
+    const asset = await readStoredAsset(currentDataOwner(c), c.req.param("id"));
     if (!asset) {
       return c.json(errorResponse("not_found", "找不到请求的图像资源。"), 404);
     }

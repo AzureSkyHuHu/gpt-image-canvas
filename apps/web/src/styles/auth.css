@@ -1,0 +1,277 @@
+.auth-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 2rem;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.auth-panel {
+  display: grid;
+  width: min(100%, 760px);
+  gap: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: clamp(1.25rem, 4vw, 2.25rem);
+  box-shadow: var(--shadow-lg);
+}
+
+.auth-panel__spinner,
+.auth-button-spinner {
+  animation: generation-placeholder-spin 0.82s linear infinite;
+}
+
+.auth-panel__icon {
+  display: inline-flex;
+  width: 2.5rem;
+  height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--focus-soft);
+  color: var(--focus);
+}
+
+.auth-panel__eyebrow,
+.auth-panel__copy,
+.auth-admin-heading p,
+.auth-token-list__empty {
+  margin: 0;
+  color: var(--muted-ink);
+}
+
+.auth-panel h1,
+.auth-admin-heading h2 {
+  margin: 0;
+  font-size: clamp(1.5rem, 4vw, 2.1rem);
+}
+
+.auth-form,
+.auth-token-form,
+.auth-admin-workspace,
+.auth-token-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.auth-form label,
+.auth-token-form label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted-ink);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.auth-form input,
+.auth-token-form input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0.7rem 0.8rem;
+  outline: none;
+}
+
+.auth-form button,
+.auth-admin-toggle,
+.auth-admin-heading button,
+.auth-created-token button,
+.auth-token-form button,
+.auth-token-item button,
+.auth-session-bar button {
+  display: inline-flex;
+  min-height: 2.35rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0.55rem 0.8rem;
+  font-weight: 800;
+}
+
+.auth-form button[type="submit"],
+.auth-token-form button[type="submit"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.auth-form button:disabled,
+.auth-token-form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.auth-form__error {
+  margin: 0;
+  border: 1px solid rgb(180 35 24 / 0.2);
+  border-radius: 6px;
+  background: rgb(254 242 242 / 0.9);
+  color: #b42318;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.auth-admin-toggle {
+  width: 100%;
+}
+
+.auth-admin-panel {
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+
+.auth-admin-heading,
+.auth-created-token,
+.auth-token-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.8rem;
+  align-items: start;
+}
+
+.auth-created-token,
+.auth-token-item,
+.auth-token-form,
+.auth-token-list__empty {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem;
+  background: var(--surface);
+}
+
+.auth-created-token {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.auth-created-token code,
+.auth-token-item dd {
+  overflow-wrap: anywhere;
+}
+
+.auth-token-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.auth-check {
+  display: flex !important;
+  align-items: center;
+}
+
+.auth-check input {
+  width: 1rem;
+  height: 1rem;
+}
+
+.auth-token-form__wide,
+.auth-token-form__actions {
+  grid-column: 1 / -1;
+}
+
+.auth-token-form__actions,
+.auth-token-item__actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.auth-token-item__title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.auth-token-item__title span {
+  border-radius: 999px;
+  background: var(--focus-soft);
+  color: var(--focus);
+  padding: 0.15rem 0.45rem;
+  font-size: 0.72rem;
+}
+
+.auth-token-item__title span[data-enabled="false"] {
+  background: color-mix(in srgb, var(--muted-ink) 12%, transparent);
+  color: var(--muted-ink);
+}
+
+.auth-token-item dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.7rem 0 0;
+}
+
+.auth-token-item dt {
+  color: var(--muted-ink);
+  font-size: 0.72rem;
+}
+
+.auth-token-item dd {
+  margin: 0.1rem 0 0;
+  font-size: 0.82rem;
+}
+
+.auth-session-bar {
+  position: fixed;
+  left: 1rem;
+  bottom: 1rem;
+  z-index: 70;
+  pointer-events: none;
+}
+
+.auth-session-bar button {
+  pointer-events: auto;
+}
+
+.auth-session-bar__toggle {
+  width: 2.45rem;
+  min-width: 2.45rem;
+  cursor: grab;
+}
+
+.auth-session-bar__menu {
+  position: absolute;
+  left: 0;
+  display: flex;
+  min-width: min(20rem, calc(100vw - 2rem));
+  align-items: center;
+  gap: 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 0.45rem;
+  box-shadow: var(--shadow-lg);
+  pointer-events: auto;
+}
+
+.auth-session-bar[data-menu-placement="above"] .auth-session-bar__menu {
+  bottom: calc(100% + 0.45rem);
+}
+
+.auth-session-bar[data-menu-placement="below"] .auth-session-bar__menu {
+  top: calc(100% + 0.45rem);
+}
+
+.auth-session-bar[data-menu-align="end"] .auth-session-bar__menu {
+  right: 0;
+  left: auto;
+}
+
+@media (max-width: 720px) {
+  .auth-token-form,
+  .auth-token-item,
+  .auth-token-item dl,
+  .auth-admin-heading,
+  .auth-created-token {
+    grid-template-columns: 1fr;
+  }
+}

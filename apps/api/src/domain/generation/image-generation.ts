@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import sharp from "sharp";
 import type {
   AssetMetadataResponse,
@@ -15,6 +15,7 @@ import type {
   ReferenceImageInput
 } from "../contracts.js";
 import { db } from "../../infrastructure/database.js";
+import type { DataOwner } from "../auth/data-owner.js";
 import {
   ProviderError,
   type EditImageProviderInput,
@@ -25,13 +26,15 @@ import {
 import {
   CosAssetStorageAdapter,
   LocalAssetStorageAdapter,
+  MyToolsAssetStorageAdapter,
   buildCosObjectKey,
   storageErrorMessage,
-  type CosAssetLocation
+  type CosAssetLocation,
+  type MyToolsAssetLocation
 } from "../../infrastructure/storage/asset-storage.js";
 import { runtimePaths } from "../../infrastructure/runtime.js";
 import { assets, generationOutputs, generationRecords, generationReferenceAssets } from "../../infrastructure/schema.js";
-import { getActiveCosStorageConfig } from "../storage/storage-config.js";
+import { getActiveCloudStorageProvider, getActiveCosStorageConfig, getActiveMyToolsStorageConfig } from "../storage/storage-config.js";
 
 const BATCH_CONCURRENCY = 2;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
@@ -43,7 +46,7 @@ interface StoredAssetFile {
   fileName: string;
   filePath: string;
   mimeType: string;
-  cloud?: CosAssetLocation;
+  cloud?: CloudAssetLocation;
 }
 
 interface BatchOutputResult {
@@ -60,9 +63,9 @@ interface SavedProviderImage {
 }
 
 interface AssetCloudStorageRecord {
-  provider: "cos";
-  bucket: string;
-  region: string;
+  provider: "cos" | "my_tools";
+  bucket?: string;
+  region?: string;
   objectKey: string;
   status: "uploaded" | "failed";
   error?: string;
@@ -70,6 +73,10 @@ interface AssetCloudStorageRecord {
   etag?: string;
   requestId?: string;
 }
+
+type CloudAssetLocation =
+  | ({ provider: "cos" } & CosAssetLocation)
+  | ({ provider: "my_tools" } & MyToolsAssetLocation);
 
 type PersistedGenerationInput = ImageProviderInput & {
   mode: "generate" | "edit";
@@ -83,14 +90,20 @@ const mimeTypes: Record<OutputFormat, string> = {
   webp: "image/webp"
 };
 
-export async function runTextToImageGeneration(input: ImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<GenerationResponse> {
+export async function runTextToImageGeneration(
+  owner: DataOwner,
+  input: ImageProviderInput,
+  provider: ImageProvider,
+  signal?: AbortSignal
+): Promise<GenerationResponse> {
   const outputs = await mapWithConcurrency(
     Array.from({ length: input.count }, (_, index) => index),
     BATCH_CONCURRENCY,
-    async () => generateSingleOutput(input, provider, signal)
+    async () => generateSingleOutput(owner, input, provider, signal)
   );
 
   const record = saveGenerationRecord(
+    owner,
     {
       ...input,
       mode: "generate"
@@ -104,11 +117,12 @@ export async function runTextToImageGeneration(input: ImageProviderInput, provid
 }
 
 export async function runReferenceImageGeneration(
+  owner: DataOwner,
   input: EditImageProviderInput,
   provider: ImageProvider,
   signal?: AbortSignal
 ): Promise<GenerationResponse> {
-  const referenceAssetIds = await ensureReferenceAssetIds(input);
+  const referenceAssetIds = await ensureReferenceAssetIds(owner, input);
   const inputWithReferenceAssets: EditImageProviderInput = {
     ...input,
     referenceAssetIds,
@@ -118,10 +132,11 @@ export async function runReferenceImageGeneration(
   const outputs = await mapWithConcurrency(
     Array.from({ length: inputWithReferenceAssets.count }, (_, index) => index),
     BATCH_CONCURRENCY,
-    async () => editSingleOutput(inputWithReferenceAssets, provider, signal)
+    async () => editSingleOutput(owner, inputWithReferenceAssets, provider, signal)
   );
 
   const record = saveGenerationRecord(
+    owner,
     {
       ...inputWithReferenceAssets,
       mode: "edit"
@@ -134,27 +149,31 @@ export async function runReferenceImageGeneration(
   };
 }
 
-async function ensureReferenceAssetIds(input: EditImageProviderInput): Promise<string[]> {
+async function ensureReferenceAssetIds(owner: DataOwner, input: EditImageProviderInput): Promise<string[]> {
   return Promise.all(
     input.referenceImages.map(async (referenceImage, index) => {
-      const existingAssetId = persistedReferenceAssetId(input.referenceAssetIds?.[index]);
+      const existingAssetId = persistedReferenceAssetId(owner, input.referenceAssetIds?.[index]);
       if (existingAssetId) {
         return existingAssetId;
       }
 
-      const savedReferenceAsset = await saveReferenceImageInput(referenceImage);
+      const savedReferenceAsset = await saveReferenceImageInput(owner, referenceImage);
       return savedReferenceAsset.id;
     })
   );
 }
 
-function persistedReferenceAssetId(assetId: string | undefined): string | undefined {
+function persistedReferenceAssetId(owner: DataOwner, assetId: string | undefined): string | undefined {
   if (!assetId) {
     return undefined;
   }
 
   for (const candidateAssetId of persistedReferenceAssetIdCandidates(assetId)) {
-    const asset = db.select({ id: assets.id }).from(assets).where(eq(assets.id, candidateAssetId)).get();
+    const asset = db
+      .select({ id: assets.id })
+      .from(assets)
+      .where(and(eq(assets.id, candidateAssetId), eq(assets.ownerTokenId, owner.id)))
+      .get();
     if (asset?.id) {
       return asset.id;
     }
@@ -174,7 +193,7 @@ function persistedReferenceAssetIdCandidates(assetId: string): string[] {
   return candidates.filter((candidate, index, values) => candidate && values.indexOf(candidate) === index);
 }
 
-async function saveReferenceImageInput(input: ReferenceImageInput): Promise<GeneratedAsset> {
+async function saveReferenceImageInput(owner: DataOwner, input: ReferenceImageInput): Promise<GeneratedAsset> {
   const parsed = referenceDataUrlToBytes(input);
   const imageSize = await readImageSize(parsed.bytes);
   if (!imageSize) {
@@ -191,7 +210,8 @@ async function saveReferenceImageInput(input: ReferenceImageInput): Promise<Gene
   await localAssetStorage.putObject({ filePath, bytes: parsed.bytes });
   db.insert(assets)
     .values({
-      id: assetId,
+	      id: assetId,
+	      ownerTokenId: owner.id,
       fileName,
       relativePath,
       mimeType: parsed.mimeType,
@@ -237,8 +257,12 @@ function extensionForMimeType(mimeType: string): string {
   return mimeType === "image/jpeg" ? "jpg" : mimeType.split("/")[1] || "png";
 }
 
-export function getStoredAssetFile(assetId: string): StoredAssetFile | undefined {
-  const asset = db.select().from(assets).where(eq(assets.id, assetId)).get();
+export function getStoredAssetFile(owner: DataOwner, assetId: string): StoredAssetFile | undefined {
+  const asset = db
+    .select()
+    .from(assets)
+    .where(and(eq(assets.id, assetId), eq(assets.ownerTokenId, owner.id)))
+    .get();
   if (!asset) {
     return undefined;
   }
@@ -253,12 +277,15 @@ export function getStoredAssetFile(assetId: string): StoredAssetFile | undefined
     fileName: asset.fileName,
     filePath,
     mimeType: asset.mimeType,
-    cloud: toCosAssetLocation(asset)
+    cloud: toCloudAssetLocation(asset)
   };
 }
 
-export async function readStoredAsset(assetId: string): Promise<{ file: StoredAssetFile; bytes: Buffer } | undefined> {
-  const file = getStoredAssetFile(assetId);
+export async function readStoredAsset(
+  owner: DataOwner,
+  assetId: string
+): Promise<{ file: StoredAssetFile; bytes: Buffer } | undefined> {
+  const file = getStoredAssetFile(owner, assetId);
   if (!file) {
     return undefined;
   }
@@ -282,8 +309,8 @@ export async function readStoredAsset(assetId: string): Promise<{ file: StoredAs
   }
 }
 
-export async function readStoredAssetMetadata(assetId: string): Promise<AssetMetadataResponse | undefined> {
-  const asset = await readStoredAsset(assetId);
+export async function readStoredAssetMetadata(owner: DataOwner, assetId: string): Promise<AssetMetadataResponse | undefined> {
+  const asset = await readStoredAsset(owner, assetId);
   if (!asset) {
     return undefined;
   }
@@ -300,7 +327,12 @@ export async function readStoredAssetMetadata(assetId: string): Promise<AssetMet
   };
 }
 
-async function generateSingleOutput(input: ImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<BatchOutputResult> {
+async function generateSingleOutput(
+  owner: DataOwner,
+  input: ImageProviderInput,
+  provider: ImageProvider,
+  signal?: AbortSignal
+): Promise<BatchOutputResult> {
   const outputId = randomUUID();
 
   try {
@@ -319,7 +351,7 @@ async function generateSingleOutput(input: ImageProviderInput, provider: ImagePr
       throw new ProviderError("unsupported_provider_behavior", "上游图像服务没有返回图像结果。", 502);
     }
 
-    const saved = await saveProviderImage(providerImage, input, signal);
+    const saved = await saveProviderImage(owner, providerImage, input, signal);
 
     return {
       id: outputId,
@@ -340,7 +372,12 @@ async function generateSingleOutput(input: ImageProviderInput, provider: ImagePr
   }
 }
 
-async function editSingleOutput(input: EditImageProviderInput, provider: ImageProvider, signal?: AbortSignal): Promise<BatchOutputResult> {
+async function editSingleOutput(
+  owner: DataOwner,
+  input: EditImageProviderInput,
+  provider: ImageProvider,
+  signal?: AbortSignal
+): Promise<BatchOutputResult> {
   const outputId = randomUUID();
 
   try {
@@ -359,7 +396,7 @@ async function editSingleOutput(input: EditImageProviderInput, provider: ImagePr
       throw new ProviderError("unsupported_provider_behavior", "上游图像服务没有返回图像结果。", 502);
     }
 
-    const saved = await saveProviderImage(providerImage, input, signal);
+    const saved = await saveProviderImage(owner, providerImage, input, signal);
 
     return {
       id: outputId,
@@ -380,7 +417,12 @@ async function editSingleOutput(input: EditImageProviderInput, provider: ImagePr
   }
 }
 
-async function saveProviderImage(image: ProviderImage, input: ImageProviderInput, _signal?: AbortSignal): Promise<SavedProviderImage> {
+async function saveProviderImage(
+  owner: DataOwner,
+  image: ProviderImage,
+  input: ImageProviderInput,
+  _signal?: AbortSignal
+): Promise<SavedProviderImage> {
   const assetId = randomUUID();
   const fileName = `${assetId}.${input.outputFormat === "jpeg" ? "jpg" : input.outputFormat}`;
   const relativePath = `assets/${fileName}`;
@@ -395,6 +437,8 @@ async function saveProviderImage(image: ProviderImage, input: ImageProviderInput
 
   await localAssetStorage.putObject({ filePath, bytes });
   const cloudStorage = await saveAssetToConfiguredCloud({
+    owner,
+    assetId,
     fileName,
     bytes,
     mimeType,
@@ -431,7 +475,7 @@ async function readImageSize(bytes: Buffer): Promise<ImageSize | undefined> {
   }
 }
 
-function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOutputResult[]): GenerationRecord {
+function saveGenerationRecord(owner: DataOwner, input: PersistedGenerationInput, outputs: BatchOutputResult[]): GenerationRecord {
   const createdAt = new Date().toISOString();
   const generationId = randomUUID();
   const successCount = outputs.filter((output) => output.status === "succeeded").length;
@@ -444,7 +488,8 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
 
   db.insert(generationRecords)
     .values({
-      id: generationId,
+	      id: generationId,
+	      ownerTokenId: owner.id,
       mode: input.mode,
       prompt: input.originalPrompt,
       effectivePrompt: input.prompt,
@@ -476,7 +521,8 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
     if (output.asset) {
       db.insert(assets)
         .values({
-          id: output.asset.id,
+	          id: output.asset.id,
+	          ownerTokenId: owner.id,
           fileName: output.asset.fileName,
           relativePath: `assets/${output.asset.fileName}`,
           mimeType: output.asset.mimeType,
@@ -498,7 +544,8 @@ function saveGenerationRecord(input: PersistedGenerationInput, outputs: BatchOut
 
     db.insert(generationOutputs)
       .values({
-        id: output.id,
+	        id: output.id,
+	        ownerTokenId: owner.id,
         generationId,
         status: output.status,
         assetId: output.asset?.id ?? null,
@@ -547,11 +594,18 @@ function toGenerationOutput(output: BatchOutputResult): GenerationOutput {
 }
 
 async function saveAssetToConfiguredCloud(input: {
+  owner: DataOwner;
+  assetId: string;
   fileName: string;
   bytes: Buffer;
   mimeType: string;
   createdAt: string;
 }): Promise<AssetCloudStorageRecord | undefined> {
+  const provider = getActiveCloudStorageProvider();
+  if (provider === "my_tools") {
+    return saveAssetToMyTools(input);
+  }
+
   const config = getActiveCosStorageConfig();
   if (!config) {
     return undefined;
@@ -589,31 +643,90 @@ async function saveAssetToConfiguredCloud(input: {
   }
 }
 
-async function readCloudAsset(location: CosAssetLocation | undefined): Promise<Buffer | undefined> {
-  const config = getActiveCosStorageConfig();
-  if (!location || !config) {
+async function saveAssetToMyTools(input: {
+  owner: DataOwner;
+  assetId: string;
+  fileName: string;
+  bytes: Buffer;
+  mimeType: string;
+  createdAt: string;
+}): Promise<AssetCloudStorageRecord | undefined> {
+  const config = getActiveMyToolsStorageConfig();
+  if (!config) {
+    return undefined;
+  }
+
+  const adapter = new MyToolsAssetStorageAdapter(config);
+
+  try {
+    const imageSize = await readImageSize(input.bytes);
+    const result = await adapter.putObject({
+      bytes: input.bytes,
+      mimeType: input.mimeType,
+      metadata: {
+        imageOwnerId: input.owner.id,
+        assetId: input.assetId,
+        fileName: input.fileName,
+        mimeType: input.mimeType,
+        width: imageSize?.width ?? 0,
+        height: imageSize?.height ?? 0,
+        createdAt: input.createdAt
+      }
+    });
+
+    return {
+      provider: "my_tools",
+      objectKey: result.archiveId,
+      status: "uploaded",
+      uploadedAt: new Date().toISOString(),
+      requestId: result.requestId
+    };
+  } catch (error) {
+    return {
+      provider: "my_tools",
+      objectKey: "",
+      status: "failed",
+      error: storageErrorMessage(error)
+    };
+  }
+}
+
+async function readCloudAsset(location: CloudAssetLocation | undefined): Promise<Buffer | undefined> {
+  if (!location) {
     return undefined;
   }
 
   try {
-    return await new CosAssetStorageAdapter(config).getObject(location);
+    if (location.provider === "my_tools") {
+      const config = getActiveMyToolsStorageConfig();
+      return config ? await new MyToolsAssetStorageAdapter(config).getObject(location) : undefined;
+    }
+
+    const config = getActiveCosStorageConfig();
+    return config ? await new CosAssetStorageAdapter(config).getObject(location) : undefined;
   } catch {
     return undefined;
   }
 }
 
-function toCosAssetLocation(asset: typeof assets.$inferSelect): CosAssetLocation | undefined {
-  if (
-    asset.cloudProvider !== "cos" ||
-    asset.cloudStatus !== "uploaded" ||
-    !asset.cloudBucket ||
-    !asset.cloudRegion ||
-    !asset.cloudObjectKey
-  ) {
+function toCloudAssetLocation(asset: typeof assets.$inferSelect): CloudAssetLocation | undefined {
+  if (asset.cloudStatus !== "uploaded" || !asset.cloudObjectKey) {
+    return undefined;
+  }
+
+  if (asset.cloudProvider === "my_tools") {
+    return {
+      provider: "my_tools",
+      archiveId: asset.cloudObjectKey
+    };
+  }
+
+  if (asset.cloudProvider !== "cos" || !asset.cloudBucket || !asset.cloudRegion) {
     return undefined;
   }
 
   return {
+    provider: "cos",
     bucket: asset.cloudBucket,
     region: asset.cloudRegion,
     key: asset.cloudObjectKey

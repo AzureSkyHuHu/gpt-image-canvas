@@ -29,7 +29,7 @@ Agent 图片执行底层复用了同一套 generation/storage 函数，但 execu
   -> runTextToImageGeneration / runReferenceImageGeneration
 ```
 
-Agent LLM 规划目前使用全局 Agent LLM 配置：
+现有代码里的 Agent LLM 规划目前使用本机全局 Agent LLM 配置：
 
 ```text
 Agent WebSocket session
@@ -38,7 +38,7 @@ Agent WebSocket session
   -> createDeepAgentsPlanner / ChatOpenAI-compatible model
 ```
 
-普通 access-token 用户不能读取或修改全局 Agent LLM 配置，但当前运行时还没有按请求主体选择 Agent LLM 后端的策略层。
+这只是当前实现状态，不是目标行为。目标行为是：普通 access-token 用户使用 Agent 时，不读取、不依赖本机全局 Agent LLM 配置；Agent LLM 规划直接按服务端解析出的账号 owner 请求 `my_tools`。本机全局 Agent LLM 配置只保留给 auth disabled、admin 或 local 模式。
 
 ## Target Architecture
 
@@ -114,13 +114,13 @@ admin/local:
   use existing local Agent LLM config
 
 access-token + AGENT_LLM_BACKEND=my_tools:
-  use MyToolsAgentPlannerRunner
+  use MyToolsAgentPlannerRunner with agentOwnerId = owner.id
 
 access-token + AGENT_LLM_BACKEND=local:
   reject with a clear recoverable Agent error
 
 access-token + AGENT_LLM_BACKEND unset:
-  default to my_tools in deployed access-token mode, or fail closed if my_tools config is missing
+  default to my_tools for access-token users, or fail closed if my_tools config is missing
 ```
 
 Image backend behavior stays aligned with the existing request-aware image provider strategy:

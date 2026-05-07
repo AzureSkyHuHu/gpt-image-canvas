@@ -24,5 +24,6 @@
 - 密钥只能从 `.env` 或运行时环境读取，绝不能写入日志。
 - 面向仓库的计划文档、迁移文档和实现说明使用中文，除非用户明确要求其他语言。
 - 本仓库中创建的 git commit message、分支说明和其他 git-facing 注释使用中文，除非用户明确要求其他语言。
+- 除非用户明确要求提交或 commit，不要自行执行 `git commit`；默认只修改文件并等待用户 review。
 - Ralph 驱动的工作开始前，阅读 `docs/ralph-execution.md`。Ralph PRD 放在 `.agents/tasks/`，运行时状态放在 `.ralph/`，额外 wrapper 日志放在 `.codex-temp/`。
 - 在 Windows 上调用 Ralph 时，优先设置 `PRD_PATH` 并通过 Git Bash 运行 `.agents/ralph/loop.sh`；避免使用会意外重写 Windows 路径的 CLI flags。

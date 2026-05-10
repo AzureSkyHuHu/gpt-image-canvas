@@ -1,10 +1,64 @@
 import type { Hono } from "hono";
+import {
+  readAssetCloudStatus,
+  refreshAssetCloudUrl,
+  restoreAssetFromMyTools,
+  resyncAssetToMyTools
+} from "../../domain/assets/cloud.js";
 import { parsePreviewWidth, readStoredAssetPreview } from "../../domain/assets/preview.js";
 import { readStoredAsset, readStoredAssetMetadata } from "../../domain/generation/image-generation.js";
 import { currentDataOwner } from "../http/access-control.js";
-import { downloadFileName, errorResponse } from "../http/errors.js";
+import { downloadFileName, errorResponse, errorToMessage } from "../http/errors.js";
 
 export function registerAssetRoutes(app: Hono): void {
+  app.get("/api/assets/:id/cloud", async (c) => {
+    const cloud = await readAssetCloudStatus(currentDataOwner(c), c.req.param("id"));
+    if (!cloud) {
+      return c.json(errorResponse("not_found", "Asset not found."), 404);
+    }
+
+    return c.json(cloud);
+  });
+
+  app.post("/api/assets/:id/cloud/resync", async (c) => {
+    try {
+      const result = await resyncAssetToMyTools(currentDataOwner(c), c.req.param("id"));
+      if (!result) {
+        return c.json(errorResponse("not_found", "Asset not found."), 404);
+      }
+
+      return c.json(result);
+    } catch (error) {
+      return c.json(errorResponse("cloud_resync_failed", errorToMessage(error)), 400);
+    }
+  });
+
+  app.post("/api/assets/:id/cloud/restore", async (c) => {
+    try {
+      const result = await restoreAssetFromMyTools(currentDataOwner(c), c.req.param("id"));
+      if (!result) {
+        return c.json(errorResponse("not_found", "Asset not found."), 404);
+      }
+
+      return c.json(result);
+    } catch (error) {
+      return c.json(errorResponse("cloud_restore_failed", errorToMessage(error)), 400);
+    }
+  });
+
+  app.post("/api/assets/:id/cloud/refresh-url", async (c) => {
+    try {
+      const result = await refreshAssetCloudUrl(currentDataOwner(c), c.req.param("id"));
+      if (!result) {
+        return c.json(errorResponse("not_found", "Asset not found."), 404);
+      }
+
+      return c.json(result);
+    } catch (error) {
+      return c.json(errorResponse("cloud_url_refresh_failed", errorToMessage(error)), 400);
+    }
+  });
+
   app.get("/api/assets/:id/preview", async (c) => {
     const parsedWidth = parsePreviewWidth(c.req.query("width"));
     if (!parsedWidth.ok) {

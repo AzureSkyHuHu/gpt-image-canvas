@@ -37,22 +37,27 @@ Stores generated and reference asset metadata.
 | `cloud_uploaded_at` | text | Optional upload timestamp. |
 | `cloud_etag` | text | Optional cloud ETag. |
 | `cloud_request_id` | text | Optional cloud request ID. |
+| `cloud_visibility` | text | Optional cloud visibility, for example `private` or `public`. |
+| `cloud_public_url` | text | Optional safe public URL returned by the cloud provider. |
+| `cloud_synced_at` | text | Optional last cloud status sync timestamp. |
 | `created_at` | text | Required ISO timestamp. |
 
 ## `storage_configs`
 
-Stores optional Tencent Cloud COS backup configuration.
+Stores optional cloud backup configuration for Tencent Cloud COS, my_tools, or S3-compatible storage.
 
 | Column | Type | Notes |
 | --- | --- | --- |
 | `id` | text | Primary key. |
 | `provider` | text | Required storage provider. |
 | `enabled` | integer | Required boolean flag stored as integer. |
-| `secret_id` | text | Optional COS secret ID. |
-| `secret_key` | text | Optional COS secret key. |
+| `secret_id` | text | Optional COS secret ID or S3 access key ID. |
+| `secret_key` | text | Optional COS secret key or S3 secret access key. |
 | `bucket` | text | Optional bucket. |
 | `region` | text | Optional region. |
 | `key_prefix` | text | Optional object key prefix. |
+| `endpoint` | text | Optional S3-compatible endpoint. |
+| `force_path_style` | integer | Optional boolean flag for S3-compatible path-style addressing. |
 | `created_at` | text | Required ISO timestamp. |
 | `updated_at` | text | Required ISO timestamp. |
 

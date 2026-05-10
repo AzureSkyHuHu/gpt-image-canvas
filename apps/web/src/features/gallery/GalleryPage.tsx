@@ -3,9 +3,14 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock3,
+  Cloud,
+  CloudDownload,
+  CloudOff,
+  CloudUpload,
   Copy,
   Download,
   ImageIcon,
+  Link2,
   Loader2,
   Maximize2,
   Palette,
@@ -17,12 +22,15 @@ import {
   X,
   XCircle
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   SIZE_PRESETS,
   STYLE_PRESETS,
+  type AssetCloudActionResponse,
+  type AssetCloudStatusResponse,
   type GalleryImageItem,
-  type GalleryResponse
+  type GalleryResponse,
+  type GeneratedAssetCloudInfo
 } from "@gpt-image-canvas/shared";
 import { localizedApiErrorMessage, useI18n, type Locale, type Translate } from "../../shared/i18n";
 import { assetDownloadUrl, assetPreviewUrl } from "../../shared/api/assets";
@@ -37,6 +45,11 @@ interface GalleryActionHandlers {
   onDelete: (item: GalleryImageItem) => void;
   onDownload: (item: GalleryImageItem) => void;
   onReuse: (item: GalleryImageItem) => void;
+  onCopyCloudLink: (item: GalleryImageItem) => void;
+  onRestoreCloud: (item: GalleryImageItem) => void;
+  onResyncCloud: (item: GalleryImageItem) => void;
+  pendingCloudAssetId: string | null;
+  cloudByAssetId: Record<string, AssetCloudStatusResponse>;
 }
 
 export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
@@ -50,6 +63,8 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
   const [selectedItem, setSelectedItem] = useState<GalleryImageItem | null>(null);
   const [pendingDeleteItem, setPendingDeleteItem] = useState<GalleryImageItem | null>(null);
   const [deletingOutputId, setDeletingOutputId] = useState<string | null>(null);
+  const [pendingCloudAssetId, setPendingCloudAssetId] = useState<string | null>(null);
+  const [cloudByAssetId, setCloudByAssetId] = useState<Record<string, AssetCloudStatusResponse>>({});
   const [copiedOutputId, setCopiedOutputId] = useState<string | null>(null);
   const statusTimerRef = useRef<number | undefined>();
   const copiedTimerRef = useRef<number | undefined>();
@@ -76,6 +91,8 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
 
         if (!controller.signal.aborted) {
           setItems(body.items);
+          setCloudByAssetId(initialCloudStatusByAssetId(body.items));
+          void refreshCloudStatuses(body.items, controller.signal);
         }
       } catch (loadError) {
         if (!controller.signal.aborted) {
@@ -139,9 +156,14 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
   const gridItems = featuredItem ? filteredItems.slice(1) : filteredItems;
   const actionHandlers: GalleryActionHandlers = {
     onCopy: (item) => void copyPrompt(item),
+    onCopyCloudLink: (item) => void copyCloudLink(item),
     onDelete: requestDelete,
     onDownload: downloadItem,
-    onReuse
+    onRestoreCloud: (item) => void restoreCloud(item),
+    onResyncCloud: (item) => void resyncCloud(item),
+    onReuse,
+    pendingCloudAssetId,
+    cloudByAssetId
   };
 
   function showStatus(message: string): void {
@@ -175,9 +197,124 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
     }
   }
 
+  async function refreshCloudStatuses(galleryItems: GalleryImageItem[], signal: AbortSignal): Promise<void> {
+    const cloudItems = galleryItems.filter((item) => item.asset.cloud);
+    await Promise.all(
+      cloudItems.map(async (item) => {
+        try {
+          const response = await fetch(`/api/assets/${encodeURIComponent(item.asset.id)}/cloud`, { signal });
+          if (!response.ok) {
+            return;
+          }
+
+          const cloud = (await response.json()) as AssetCloudStatusResponse;
+          if (!signal.aborted) {
+            applyCloudStatus(item.asset.id, cloud);
+          }
+        } catch {
+          // Gallery remains usable with the stored cloud summary.
+        }
+      })
+    );
+  }
+
+  async function resyncCloud(item: GalleryImageItem): Promise<void> {
+    await runCloudAction(item, "resync", t("galleryCloudResynced"));
+  }
+
+  async function restoreCloud(item: GalleryImageItem): Promise<void> {
+    await runCloudAction(item, "restore", t("galleryCloudRestored"));
+  }
+
+  async function copyCloudLink(item: GalleryImageItem): Promise<void> {
+    const existing = cloudByAssetId[item.asset.id];
+    let cloud = existing?.publicUrl ? existing : undefined;
+
+    if (!cloud) {
+      cloud = await runCloudAction(item, "refresh-url");
+    }
+    if (!cloud?.publicUrl) {
+      setError(t("galleryRequestFailed", { status: 400 }));
+      return;
+    }
+
+    try {
+      await writeClipboardText(cloud.publicUrl);
+      showStatus(t("galleryCloudLinkCopied"));
+    } catch {
+      setError(t("generationCopyFailed"));
+    }
+  }
+
+  async function runCloudAction(
+    item: GalleryImageItem,
+    action: "resync" | "restore" | "refresh-url",
+    successMessage?: string
+  ): Promise<AssetCloudStatusResponse | undefined> {
+    setPendingCloudAssetId(item.asset.id);
+    setError("");
+
+    try {
+      const response = await fetch(`/api/assets/${encodeURIComponent(item.asset.id)}/cloud/${action}`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        throw new Error(await readGalleryError(response, locale, t));
+      }
+
+      const body = (await response.json()) as AssetCloudActionResponse;
+      applyCloudStatus(item.asset.id, body.cloud);
+      if (successMessage) {
+        showStatus(successMessage);
+      }
+      return body.cloud;
+    } catch (cloudError) {
+      setError(cloudError instanceof Error ? cloudError.message : t("galleryLoadFailed"));
+      return undefined;
+    } finally {
+      setPendingCloudAssetId(null);
+    }
+  }
+
+  function applyCloudStatus(assetId: string, cloud: AssetCloudStatusResponse): void {
+    setCloudByAssetId((current) => ({
+      ...current,
+      [assetId]: cloud
+    }));
+    setItems((current) =>
+      current.map((item) =>
+        item.asset.id === assetId
+          ? {
+              ...item,
+              asset: {
+                ...item.asset,
+                cloud: toGeneratedAssetCloud(cloud)
+              }
+            }
+          : item
+      )
+    );
+    setSelectedItem((current) =>
+      current?.asset.id === assetId
+        ? {
+            ...current,
+            asset: {
+              ...current.asset,
+              cloud: toGeneratedAssetCloud(cloud)
+            }
+          }
+        : current
+    );
+  }
+
   function downloadItem(item: GalleryImageItem): void {
     window.open(assetDownloadUrl(item.asset.id), "_blank", "noopener,noreferrer");
     showStatus(t("galleryOpenDownload"));
+  }
+
+  function downloadGalleryZip(): void {
+    window.open("/api/gallery/export.zip", "_blank", "noopener,noreferrer");
+    showStatus(t("galleryExportStarted"));
   }
 
   function requestDelete(item: GalleryImageItem): void {
@@ -239,6 +376,10 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
+          <button className="secondary-action h-10" type="button" onClick={downloadGalleryZip}>
+            <Download className="size-4" aria-hidden="true" />
+            {t("galleryExportZip")}
+          </button>
         </header>
 
         {error ? (
@@ -304,12 +445,17 @@ export function GalleryPage({ onDeleted, onReuse }: GalleryPageProps) {
       {selectedItem ? (
         <GalleryDetailDialog
           copied={copiedOutputId === selectedItem.outputId}
+          cloud={cloudByAssetId[selectedItem.asset.id]}
           deleting={deletingOutputId === selectedItem.outputId}
           item={selectedItem}
+          pendingCloud={pendingCloudAssetId === selectedItem.asset.id}
           onClose={() => setSelectedItem(null)}
+          onCopyCloudLink={() => void copyCloudLink(selectedItem)}
           onCopy={() => void copyPrompt(selectedItem)}
           onDelete={() => requestDelete(selectedItem)}
           onDownload={() => downloadItem(selectedItem)}
+          onRestoreCloud={() => void restoreCloud(selectedItem)}
+          onResyncCloud={() => void resyncCloud(selectedItem)}
           onReuse={() => onReuse(selectedItem)}
         />
       ) : null}
@@ -332,11 +478,16 @@ function FeaturedGalleryItem({
   expanded,
   item,
   onCopy,
+  onCopyCloudLink,
   onDelete,
   onDownload,
   onOpen,
+  onRestoreCloud,
+  onResyncCloud,
   onReuse,
-  onTogglePrompt
+  onTogglePrompt,
+  pendingCloudAssetId,
+  cloudByAssetId
 }: {
   copied: boolean;
   deleting: boolean;
@@ -370,6 +521,14 @@ function FeaturedGalleryItem({
 
       <div className="gallery-feature__body">
         <GalleryTags item={item} />
+        <CloudStatusPanel
+          cloud={cloudByAssetId[item.asset.id]}
+          item={item}
+          pending={pendingCloudAssetId === item.asset.id}
+          onCopyCloudLink={onCopyCloudLink}
+          onRestoreCloud={onRestoreCloud}
+          onResyncCloud={onResyncCloud}
+        />
         <div className="gallery-feature__prompt-panel">
           <CollapsiblePrompt
             expanded={expanded}
@@ -409,11 +568,16 @@ function GalleryCard({
   expanded,
   item,
   onCopy,
+  onCopyCloudLink,
   onDelete,
   onDownload,
   onOpen,
+  onRestoreCloud,
+  onResyncCloud,
   onReuse,
-  onTogglePrompt
+  onTogglePrompt,
+  pendingCloudAssetId,
+  cloudByAssetId
 }: {
   copied: boolean;
   deleting: boolean;
@@ -447,6 +611,15 @@ function GalleryCard({
 
       <div className="gallery-card__body">
         <GalleryTags item={item} compact />
+        <CloudStatusPanel
+          cloud={cloudByAssetId[item.asset.id]}
+          compact
+          item={item}
+          pending={pendingCloudAssetId === item.asset.id}
+          onCopyCloudLink={onCopyCloudLink}
+          onRestoreCloud={onRestoreCloud}
+          onResyncCloud={onResyncCloud}
+        />
         <CollapsiblePrompt
           expanded={expanded}
           label={t("galleryPromptLabel")}
@@ -486,7 +659,11 @@ function GalleryIconActions({
   copied: boolean;
   deleting: boolean;
   item: GalleryImageItem;
-} & GalleryActionHandlers) {
+  onCopy: (item: GalleryImageItem) => void;
+  onDelete: (item: GalleryImageItem) => void;
+  onDownload: (item: GalleryImageItem) => void;
+  onReuse: (item: GalleryImageItem) => void;
+}) {
   const { t } = useI18n();
   const excerpt = promptExcerpt(item.prompt);
 
@@ -559,6 +736,120 @@ function GalleryTags({ item, compact = false }: { item: GalleryImageItem; compac
   );
 }
 
+function CloudStatusPanel({
+  cloud,
+  compact = false,
+  item,
+  pending,
+  onCopyCloudLink,
+  onRestoreCloud,
+  onResyncCloud
+}: {
+  cloud: AssetCloudStatusResponse | undefined;
+  compact?: boolean;
+  item: GalleryImageItem;
+  pending: boolean;
+  onCopyCloudLink: (item: GalleryImageItem) => void;
+  onRestoreCloud: (item: GalleryImageItem) => void;
+  onResyncCloud: (item: GalleryImageItem) => void;
+}) {
+  const { formatDateTime, t } = useI18n();
+  const status = cloudStatusDisplay(cloud, t);
+  const excerpt = promptExcerpt(item.prompt);
+  const canCopyLink = cloud?.provider === "my_tools" && cloud.status === "uploaded" && Boolean(cloud.publicUrl);
+  const canRefreshLink = cloud?.provider === "my_tools" && cloud.status === "uploaded";
+  const canRestore = cloud?.provider === "my_tools" && cloud.readable;
+
+  return (
+    <div className="gallery-cloud" data-compact={compact} data-status={status.tone}>
+      <div className="gallery-cloud__summary">
+        {status.icon}
+        <span>{status.label}</span>
+        {cloud?.syncedAt ? <time dateTime={cloud.syncedAt}>{formatDateTime(cloud.syncedAt)}</time> : null}
+      </div>
+      <div className="gallery-cloud__actions">
+        <button
+          aria-label={t("galleryActionResyncCloud", { excerpt })}
+          className="gallery-cloud__button"
+          disabled={pending}
+          title={t("galleryCloudResync")}
+          type="button"
+          onClick={() => onResyncCloud(item)}
+        >
+          {pending ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <CloudUpload className="size-3.5" aria-hidden="true" />}
+          <span>{t("galleryCloudResync")}</span>
+        </button>
+        <button
+          aria-label={t("galleryActionRestoreCloud", { excerpt })}
+          className="gallery-cloud__button"
+          disabled={!canRestore || pending}
+          title={t("galleryCloudRestore")}
+          type="button"
+          onClick={() => onRestoreCloud(item)}
+        >
+          <CloudDownload className="size-3.5" aria-hidden="true" />
+          <span>{t("galleryCloudRestore")}</span>
+        </button>
+        <button
+          aria-label={t("galleryActionCopyCloudLink", { excerpt })}
+          className="gallery-cloud__button"
+          disabled={(!canCopyLink && !canRefreshLink) || pending}
+          title={t("galleryCloudCopyLink")}
+          type="button"
+          onClick={() => onCopyCloudLink(item)}
+        >
+          <Link2 className="size-3.5" aria-hidden="true" />
+          <span>{t("commonCopy")}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function cloudStatusDisplay(cloud: AssetCloudStatusResponse | undefined, t: Translate): { label: string; tone: string; icon: ReactElement } {
+  if (!cloud) {
+    return {
+      label: t("galleryCloudNotSynced"),
+      tone: "idle",
+      icon: <CloudOff className="size-3.5" aria-hidden="true" />
+    };
+  }
+  if (cloud.status === "failed") {
+    return {
+      label: t("galleryCloudFailed"),
+      tone: "failed",
+      icon: <AlertTriangle className="size-3.5" aria-hidden="true" />
+    };
+  }
+  if (cloud.status === "missing") {
+    return {
+      label: t("galleryCloudMissing"),
+      tone: "missing",
+      icon: <CloudOff className="size-3.5" aria-hidden="true" />
+    };
+  }
+  if (cloud.status === "deleted") {
+    return {
+      label: t("galleryCloudDeleted"),
+      tone: "missing",
+      icon: <CloudOff className="size-3.5" aria-hidden="true" />
+    };
+  }
+  if (!cloud.readable) {
+    return {
+      label: t("galleryCloudPending"),
+      tone: "pending",
+      icon: <Cloud className="size-3.5" aria-hidden="true" />
+    };
+  }
+
+  return {
+    label: t("galleryCloudUploaded"),
+    tone: "uploaded",
+    icon: <Cloud className="size-3.5" aria-hidden="true" />
+  };
+}
+
 function CollapsiblePrompt({
   expanded,
   label,
@@ -597,22 +888,32 @@ function CollapsiblePrompt({
 }
 
 function GalleryDetailDialog({
+  cloud,
   copied,
   deleting,
   item,
+  pendingCloud,
   onClose,
+  onCopyCloudLink,
   onCopy,
   onDelete,
   onDownload,
+  onRestoreCloud,
+  onResyncCloud,
   onReuse
 }: {
+  cloud: AssetCloudStatusResponse | undefined;
   copied: boolean;
   deleting: boolean;
   item: GalleryImageItem;
+  pendingCloud: boolean;
   onClose: () => void;
+  onCopyCloudLink: () => void;
   onCopy: () => void;
   onDelete: () => void;
   onDownload: () => void;
+  onRestoreCloud: () => void;
+  onResyncCloud: () => void;
   onReuse: () => void;
 }) {
   const [promptExpanded, setPromptExpanded] = useState(false);
@@ -646,12 +947,20 @@ function GalleryDetailDialog({
           <aside className="gallery-modal__copy">
             <div className="gallery-modal__meta">
               <span>
-              <Clock3 className="size-3.5" aria-hidden="true" />
+                <Clock3 className="size-3.5" aria-hidden="true" />
                 {formatCreatedTime(item.createdAt, formatDateTime)}
               </span>
               <span>{item.outputFormat.toUpperCase()}</span>
               <span>{t("qualityLabel", { quality: item.quality })}</span>
             </div>
+            <CloudStatusPanel
+              cloud={cloud}
+              item={item}
+              pending={pendingCloud}
+              onCopyCloudLink={() => onCopyCloudLink()}
+              onRestoreCloud={() => onRestoreCloud()}
+              onResyncCloud={() => onResyncCloud()}
+            />
             <CollapsiblePrompt
               expanded={promptExpanded}
               label={t("galleryPromptLabel")}
@@ -753,6 +1062,51 @@ function sizeTagLabel(item: GalleryImageItem, t: Translate): string {
   const preset = SIZE_PRESETS.find((sizePreset) => sizePreset.width === item.size.width && sizePreset.height === item.size.height);
   const presetLabel = preset ? t("sizePresetLabel", { presetId: preset.id, fallback: preset.label }) : t("customSize");
   return `${presetLabel} · ${item.size.width} x ${item.size.height}`;
+}
+
+function initialCloudStatusByAssetId(items: GalleryImageItem[]): Record<string, AssetCloudStatusResponse> {
+  return Object.fromEntries(
+    items.flatMap((item) => {
+      const cloud = item.asset.cloud;
+      if (!cloud) {
+        return [];
+      }
+
+      return [
+        [
+          item.asset.id,
+          {
+            assetId: item.asset.id,
+            provider: cloud.provider,
+            status: cloud.status,
+            readable: cloud.readable ?? cloud.status === "uploaded",
+            visibility: cloud.visibility ?? "private",
+            publicUrl: cloud.publicUrl,
+            syncedAt: cloud.syncedAt ?? cloud.uploadedAt,
+            mimeType: item.asset.mimeType,
+            lastError: cloud.lastError
+          } satisfies AssetCloudStatusResponse
+        ]
+      ];
+    })
+  );
+}
+
+function toGeneratedAssetCloud(cloud: AssetCloudStatusResponse): GeneratedAssetCloudInfo | undefined {
+  if (!cloud.provider) {
+    return undefined;
+  }
+
+  return {
+    provider: cloud.provider,
+    status: cloud.status,
+    lastError: cloud.lastError,
+    publicUrl: cloud.visibility === "public" ? cloud.publicUrl : undefined,
+    readable: cloud.readable,
+    syncedAt: cloud.syncedAt,
+    uploadedAt: cloud.syncedAt,
+    visibility: cloud.visibility
+  };
 }
 
 function promptExcerpt(promptValue: string): string {

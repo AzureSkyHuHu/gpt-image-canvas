@@ -237,10 +237,47 @@ export function parseStorageConfigPayload(input: unknown): ParseResult<SaveStora
   }
 
   const provider = parseOptionalString(input.provider) ?? "cos";
-  if (provider !== "cos") {
+  if (provider === "my_tools") {
+    return {
+      ok: true,
+      value: {
+        enabled: true,
+        provider: "my_tools"
+      }
+    };
+  }
+
+  if (provider !== "cos" && provider !== "s3") {
     return {
       ok: false,
-      error: errorResponse("invalid_storage_provider", "Only Tencent COS storage is supported.")
+      error: errorResponse("invalid_storage_provider", "Storage provider must be my_tools, Tencent COS, or S3-compatible storage.")
+    };
+  }
+
+  if (provider === "s3") {
+    if (!isRecord(input.s3)) {
+      return {
+        ok: false,
+        error: errorResponse("invalid_storage_config", "S3-compatible config must be a JSON object.")
+      };
+    }
+
+    return {
+      ok: true,
+      value: {
+        enabled: true,
+        provider: "s3",
+        s3: {
+          accessKeyId: stringValue(input.s3.accessKeyId) ?? "",
+          secretAccessKey: stringValue(input.s3.secretAccessKey),
+          preserveSecret: input.s3.preserveSecret === true,
+          bucket: stringValue(input.s3.bucket) ?? "",
+          region: stringValue(input.s3.region) ?? "",
+          endpoint: stringValue(input.s3.endpoint) ?? "",
+          keyPrefix: stringValue(input.s3.keyPrefix) ?? "",
+          forcePathStyle: input.s3.forcePathStyle === true
+        }
+      }
     };
   }
 

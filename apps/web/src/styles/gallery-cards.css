@@ -365,6 +365,112 @@
   gap: 0.38rem;
 }
 
+.gallery-cloud {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fffdf8;
+  color: var(--muted-ink);
+  margin-top: 0.65rem;
+  padding: 0.42rem;
+}
+
+.gallery-cloud[data-status="uploaded"] {
+  border-color: #bfe7df;
+  background: #effbf7;
+  color: #0f5f58;
+}
+
+.gallery-cloud[data-status="failed"],
+.gallery-cloud[data-status="missing"] {
+  border-color: #f2b8ad;
+  background: #fff1ed;
+  color: var(--danger);
+}
+
+.gallery-cloud[data-status="pending"] {
+  border-color: #ead1bc;
+  background: #fff5e8;
+  color: var(--accent-dark);
+}
+
+.gallery-cloud__summary {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.36rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.gallery-cloud__summary span,
+.gallery-cloud__summary time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gallery-cloud__summary time {
+  color: var(--muted-ink);
+  font-weight: 600;
+}
+
+.gallery-cloud__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+  justify-content: end;
+}
+
+.gallery-cloud__button {
+  display: inline-flex;
+  min-height: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.28rem;
+  border: 1px solid rgb(190 104 65 / 0.18);
+  border-radius: 6px;
+  background: rgb(255 253 248 / 0.78);
+  color: var(--ink);
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 0 0.42rem;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.gallery-cloud__button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: #f9f1e5;
+}
+
+.gallery-cloud__button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.gallery-cloud[data-compact="true"] {
+  grid-template-columns: 1fr;
+}
+
+.gallery-cloud[data-compact="true"] .gallery-cloud__actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  justify-content: stretch;
+}
+
+.gallery-cloud[data-compact="true"] .gallery-cloud__button span {
+  display: none;
+}
+
 .gallery-tag {
   min-height: 1.65rem;
   border-color: var(--line);

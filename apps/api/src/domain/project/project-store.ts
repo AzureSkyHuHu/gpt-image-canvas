@@ -321,13 +321,17 @@ function toGeneratedAsset(asset: (typeof assets.$inferSelect) | undefined): Gene
     width: asset.width,
     height: asset.height,
     cloud:
-      (asset.cloudProvider === "cos" || asset.cloudProvider === "my_tools") &&
-      (asset.cloudStatus === "uploaded" || asset.cloudStatus === "failed")
+      (asset.cloudProvider === "cos" || asset.cloudProvider === "my_tools" || asset.cloudProvider === "s3") &&
+      (asset.cloudStatus === "uploaded" || asset.cloudStatus === "failed" || asset.cloudStatus === "missing" || asset.cloudStatus === "deleted")
         ? {
             provider: asset.cloudProvider,
             status: asset.cloudStatus,
             lastError: asset.cloudError ?? undefined,
-            uploadedAt: asset.cloudUploadedAt ?? undefined
+            publicUrl: asset.cloudVisibility === "public" ? asset.cloudPublicUrl ?? undefined : undefined,
+            readable: asset.cloudStatus === "uploaded",
+            syncedAt: asset.cloudSyncedAt ?? undefined,
+            uploadedAt: asset.cloudUploadedAt ?? undefined,
+            visibility: asset.cloudVisibility === "public" ? "public" : "private"
           }
         : undefined
   };

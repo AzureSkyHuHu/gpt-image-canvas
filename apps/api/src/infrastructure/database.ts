@@ -65,6 +65,9 @@ CREATE TABLE IF NOT EXISTS assets (
   cloud_uploaded_at TEXT,
   cloud_etag TEXT,
   cloud_request_id TEXT,
+  cloud_visibility TEXT,
+  cloud_public_url TEXT,
+  cloud_synced_at TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -78,6 +81,8 @@ CREATE TABLE IF NOT EXISTS storage_configs (
   bucket TEXT,
   region TEXT,
   key_prefix TEXT,
+  endpoint TEXT,
+  force_path_style INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -180,6 +185,8 @@ CREATE INDEX IF NOT EXISTS access_tokens_token_hash_idx ON access_tokens(token_h
 ensureColumn("projects", "owner_token_id", "owner_token_id TEXT NOT NULL DEFAULT 'local'");
 ensureColumn("assets", "owner_token_id", "owner_token_id TEXT NOT NULL DEFAULT 'local'");
 ensureColumn("storage_configs", "owner_token_id", "owner_token_id TEXT NOT NULL DEFAULT 'local'");
+ensureColumn("storage_configs", "endpoint", "endpoint TEXT");
+ensureColumn("storage_configs", "force_path_style", "force_path_style INTEGER");
 ensureColumn("generation_records", "owner_token_id", "owner_token_id TEXT NOT NULL DEFAULT 'local'");
 ensureColumn("generation_outputs", "owner_token_id", "owner_token_id TEXT NOT NULL DEFAULT 'local'");
 sqlite.exec(`
@@ -199,6 +206,9 @@ ensureColumn("assets", "cloud_error", "cloud_error TEXT");
 ensureColumn("assets", "cloud_uploaded_at", "cloud_uploaded_at TEXT");
 ensureColumn("assets", "cloud_etag", "cloud_etag TEXT");
 ensureColumn("assets", "cloud_request_id", "cloud_request_id TEXT");
+ensureColumn("assets", "cloud_visibility", "cloud_visibility TEXT");
+ensureColumn("assets", "cloud_public_url", "cloud_public_url TEXT");
+ensureColumn("assets", "cloud_synced_at", "cloud_synced_at TEXT");
 ensureColumn("codex_oauth_tokens", "access_token", "access_token TEXT");
 ensureColumn("codex_oauth_tokens", "refresh_token", "refresh_token TEXT");
 ensureColumn("codex_oauth_tokens", "id_token", "id_token TEXT");

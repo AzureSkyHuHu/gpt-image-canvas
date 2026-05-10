@@ -219,11 +219,19 @@ function agentPreviewDisclosureLabel(locale: Locale, count: number): string {
 
 const defaultStorageConfigForm: StorageConfigFormState = {
   enabled: false,
+  provider: "cos",
   secretId: "",
   secretKey: "",
   bucket: "source-1253253332",
   region: "ap-nanjing",
-  keyPrefix: "gpt-image-canvas/assets"
+  keyPrefix: "gpt-image-canvas/assets",
+  s3AccessKeyId: "",
+  s3SecretAccessKey: "",
+  s3Bucket: "",
+  s3Region: "auto",
+  s3Endpoint: "",
+  s3KeyPrefix: "gpt-image-canvas/assets",
+  s3ForcePathStyle: true
 };
 
 const canvasAssetStore: TLAssetStore = {
@@ -401,11 +409,19 @@ interface ActiveGenerationTask {
 
 interface StorageConfigFormState {
   enabled: boolean;
+  provider: "cos" | "my_tools" | "s3";
   secretId: string;
   secretKey: string;
   bucket: string;
   region: string;
   keyPrefix: string;
+  s3AccessKeyId: string;
+  s3SecretAccessKey: string;
+  s3Bucket: string;
+  s3Region: string;
+  s3Endpoint: string;
+  s3KeyPrefix: string;
+  s3ForcePathStyle: boolean;
 }
 
 interface ReferenceSelectionItem {
@@ -2048,11 +2064,19 @@ function storageConfigToForm(config: StorageConfigResponse | null): StorageConfi
 
   return {
     enabled: config.enabled,
+    provider: config.provider === "s3" || config.provider === "my_tools" ? config.provider : "cos",
     secretId: config.cos.secretId,
     secretKey: config.cos.secretKey.value ?? "",
     bucket: config.cos.bucket,
     region: config.cos.region,
-    keyPrefix: config.cos.keyPrefix
+    keyPrefix: config.cos.keyPrefix,
+    s3AccessKeyId: config.s3.accessKeyId,
+    s3SecretAccessKey: config.s3.secretAccessKey.value ?? "",
+    s3Bucket: config.s3.bucket,
+    s3Region: config.s3.region,
+    s3Endpoint: config.s3.endpoint,
+    s3KeyPrefix: config.s3.keyPrefix,
+    s3ForcePathStyle: config.s3.forcePathStyle
   };
 }
 
@@ -2060,6 +2084,29 @@ function storageConfigRequestBody(
   form: StorageConfigFormState,
   options: { preserveSecret: boolean; forceEnabled?: boolean }
 ): SaveStorageConfigRequest {
+  if (form.provider === "my_tools") {
+    return {
+      enabled: options.forceEnabled ?? form.enabled,
+      provider: "my_tools"
+    };
+  }
+  if (form.provider === "s3") {
+    return {
+      enabled: options.forceEnabled ?? form.enabled,
+      provider: "s3",
+      s3: {
+        accessKeyId: form.s3AccessKeyId.trim(),
+        secretAccessKey: options.preserveSecret ? undefined : form.s3SecretAccessKey,
+        preserveSecret: options.preserveSecret,
+        bucket: form.s3Bucket.trim(),
+        region: form.s3Region.trim(),
+        endpoint: form.s3Endpoint.trim(),
+        keyPrefix: form.s3KeyPrefix.trim(),
+        forcePathStyle: form.s3ForcePathStyle
+      }
+    };
+  }
+
   return {
     enabled: options.forceEnabled ?? form.enabled,
     provider: "cos",
@@ -3061,7 +3108,9 @@ export function App() {
         },
         body: JSON.stringify(
           storageConfigRequestBody(storageForm, {
-            preserveSecret: !storageSecretTouched && Boolean(storageConfig?.cos.secretKey.hasSecret),
+            preserveSecret:
+              !storageSecretTouched &&
+              (storageForm.provider === "s3" ? Boolean(storageConfig?.s3.secretAccessKey.hasSecret) : Boolean(storageConfig?.cos.secretKey.hasSecret)),
             forceEnabled: true
           })
         )
@@ -3098,7 +3147,9 @@ export function App() {
         },
         body: JSON.stringify(
           storageConfigRequestBody(storageForm, {
-            preserveSecret: !storageSecretTouched && Boolean(storageConfig?.cos.secretKey.hasSecret)
+            preserveSecret:
+              !storageSecretTouched &&
+              (storageForm.provider === "s3" ? Boolean(storageConfig?.s3.secretAccessKey.hasSecret) : Boolean(storageConfig?.cos.secretKey.hasSecret))
           })
         )
       });
@@ -5999,6 +6050,30 @@ export function App() {
                 />
               </label>
 
+              <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label={t("storageProviderLabel")}>
+                {(["cos", "s3", "my_tools"] as const).map((provider) => (
+                  <button
+                    className="secondary-action h-10"
+                    data-active={storageForm.provider === provider}
+                    key={provider}
+                    type="button"
+                    onClick={() => {
+                      setStorageSecretTouched(false);
+                      updateStorageForm({ provider });
+                    }}
+                  >
+                    {t("storageProviderOption", { provider })}
+                  </button>
+                ))}
+              </div>
+
+              {storageForm.provider === "my_tools" ? (
+                <p className="rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm leading-5 text-neutral-600">
+                  {storageConfig?.myToolsAvailable ? t("storageMyToolsAvailable") : t("storageMyToolsMissing")}
+                </p>
+              ) : null}
+
+              {storageForm.provider === "cos" ? (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <label className="block sm:col-span-2">
                   <span className="control-label">SecretId</span>
@@ -6060,6 +6135,95 @@ export function App() {
                   />
                 </label>
               </div>
+              ) : null}
+
+              {storageForm.provider === "s3" ? (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <label className="block sm:col-span-2">
+                    <span className="control-label">Access Key ID</span>
+                    <input
+                      className="field-control"
+                      data-testid="storage-s3-access-key-id"
+                      id="storage-s3-access-key-id"
+                      name="storageS3AccessKeyId"
+                      value={storageForm.s3AccessKeyId}
+                      onChange={(event) => updateStorageForm({ s3AccessKeyId: event.target.value })}
+                    />
+                  </label>
+                  <label className="block sm:col-span-2">
+                    <span className="control-label">Secret Access Key</span>
+                    <input
+                      className="field-control"
+                      data-testid="storage-s3-secret-access-key"
+                      id="storage-s3-secret-access-key"
+                      name="storageS3SecretAccessKey"
+                      type={storageSecretTouched ? "password" : "text"}
+                      value={storageForm.s3SecretAccessKey}
+                      onChange={(event) => {
+                        setStorageSecretTouched(true);
+                        updateStorageForm({ s3SecretAccessKey: event.target.value });
+                      }}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="control-label">Bucket</span>
+                    <input
+                      className="field-control"
+                      data-testid="storage-s3-bucket"
+                      id="storage-s3-bucket"
+                      name="storageS3Bucket"
+                      value={storageForm.s3Bucket}
+                      onChange={(event) => updateStorageForm({ s3Bucket: event.target.value })}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="control-label">Region</span>
+                    <input
+                      className="field-control"
+                      data-testid="storage-s3-region"
+                      id="storage-s3-region"
+                      name="storageS3Region"
+                      value={storageForm.s3Region}
+                      onChange={(event) => updateStorageForm({ s3Region: event.target.value })}
+                    />
+                  </label>
+                  <label className="block sm:col-span-2">
+                    <span className="control-label">Endpoint</span>
+                    <input
+                      className="field-control"
+                      data-testid="storage-s3-endpoint"
+                      id="storage-s3-endpoint"
+                      name="storageS3Endpoint"
+                      placeholder="https://..."
+                      value={storageForm.s3Endpoint}
+                      onChange={(event) => updateStorageForm({ s3Endpoint: event.target.value })}
+                    />
+                  </label>
+                  <label className="block sm:col-span-2">
+                    <span className="control-label">Key Prefix</span>
+                    <input
+                      className="field-control"
+                      data-testid="storage-s3-prefix"
+                      id="storage-s3-prefix"
+                      name="storageS3Prefix"
+                      value={storageForm.s3KeyPrefix}
+                      onChange={(event) => updateStorageForm({ s3KeyPrefix: event.target.value })}
+                    />
+                  </label>
+                  <label className="flex items-center gap-2 sm:col-span-2">
+                    <input
+                      checked={storageForm.s3ForcePathStyle}
+                      className="size-4 accent-blue-600"
+                      data-testid="storage-s3-force-path-style"
+                      id="storage-s3-force-path-style"
+                      name="storageS3ForcePathStyle"
+                      type="checkbox"
+                      onChange={(event) => updateStorageForm({ s3ForcePathStyle: event.target.checked })}
+                    />
+                    <span className="text-sm font-medium text-neutral-700">{t("storageS3ForcePathStyle")}</span>
+                  </label>
+                </div>
+              ) : null}
             </div>
 
             <div className="grid grid-cols-2 gap-3 border-t border-neutral-200 px-5 py-4">

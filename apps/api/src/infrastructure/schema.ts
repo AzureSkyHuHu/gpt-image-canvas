@@ -27,6 +27,9 @@ export const assets = sqliteTable("assets", {
   cloudUploadedAt: text("cloud_uploaded_at"),
   cloudEtag: text("cloud_etag"),
   cloudRequestId: text("cloud_request_id"),
+  cloudVisibility: text("cloud_visibility"),
+  cloudPublicUrl: text("cloud_public_url"),
+  cloudSyncedAt: text("cloud_synced_at"),
   createdAt: text("created_at").notNull()
 });
 
@@ -40,6 +43,8 @@ export const storageConfigs = sqliteTable("storage_configs", {
   bucket: text("bucket"),
   region: text("region"),
   keyPrefix: text("key_prefix"),
+  endpoint: text("endpoint"),
+  forcePathStyle: integer("force_path_style"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 });

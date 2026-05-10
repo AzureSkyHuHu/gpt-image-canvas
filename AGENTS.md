@@ -1,17 +1,19 @@
 # 仓库说明
 
 - 使用 `pnpm install` 安装依赖；包管理器固定为 `pnpm@9.14.2`。
-- Node 相关工作使用 dnmp 中已有的 `node` 容器。`node`、`pnpm`、`npm`、typecheck、build 和开发服务器验证都在该容器内执行；仓库通常通过 `/opt/project -> /www` 挂载，对应容器路径为 `/www/python_project/gpt-image-canvas`。
+- Node 相关工作优先使用本项目自己的 app 镜像/容器，避免 dnmp `node` 容器的源码挂载把 `node_modules` 或构建产物写回宿主工作区。项目运行容器为 `gpt_image_canvas_app`，应用路径为 `/app`，镜像内包含 `node` 和 `pnpm@9.14.2`。
 - 不要自行启动临时 Node 容器，也不要使用宿主机 Node、切换宿主机 Node 版本或用宿主机 `pnpm` 替代容器验证；宿主机 Node 可能版本不对或原生模块 ABI 不匹配。
-- 如果 Docker 或 dnmp 的 `node` 容器不可用，提醒用户开启 Docker / 启动 dnmp `node` 容器并等待用户处理；不要自行做主切换到其他 Node 运行时。
+- 如果 Docker 或本项目 app 容器/镜像不可用，提醒用户开启 Docker / 启动项目容器并等待用户处理；不要自行做主切换到其他 Node 运行时。
 - 完成一个 story 前运行 `pnpm typecheck` 和 `pnpm build`。
 - 涉及 UI 的 story 必须对运行中的应用做浏览器验证。
 - API 应用位于 `apps/api`；Web 应用位于 `apps/web`；共享契约位于 `packages/shared`。
 - 根脚本会转发到 workspace 包：`pnpm dev`、`pnpm api:dev`、`pnpm web:dev`、`pnpm typecheck`、`pnpm build` 和 `pnpm start`。
 - 区分验证环境：
-  - 工具链验证（`pnpm install`、`pnpm typecheck`、`pnpm build`、smoke 脚本）走 dnmp 中已有的 `node` 容器。
+  - 工具链验证优先走本项目 app 镜像/容器：需要验证当前工作区源码时，先执行 `docker compose build app` 或 `docker compose up -d --build app`，让镜像在隔离构建层内运行 `pnpm build`；需要在已构建容器内检查运行时命令时，使用 `docker exec gpt_image_canvas_app sh -lc 'cd /app && ...'`。
+  - `pnpm typecheck` 如需验证当前工作区源码，优先通过项目 Dockerfile/build 流程覆盖；不要默认改用 dnmp `node` 容器，因为其 `/opt/project -> /www` 挂载会在宿主工作区生成 `node_modules`。
   - 浏览器实机验证优先打开项目自己的运行容器 `gpt_image_canvas_app` 暴露的 `http://localhost:8787`；该容器是一体化应用入口，不需要为了实机验证再启动临时 Node 容器。
-  - 只有当需要验证当前工作区未提交改动且 `gpt_image_canvas_app` 未包含这些改动时，才考虑重建/重启现有项目 app 容器，或在 dnmp `node` 容器里启动开发服务；执行前先说明原因，不要自行启动额外临时 Node 容器。
+  - 如果 `http://localhost:8787` 被 AuthGate 拦住，优先使用本地未跟踪文件 `.codex-temp/browser-test-token.txt` 中的测试 access token 登录后再验证；不要把该 token 原文写入日志、提交内容或文档正文。
+  - 只有当需要验证当前工作区未提交改动且 `gpt_image_canvas_app` 未包含这些改动时，才重建/重启现有项目 app 容器；执行前先说明原因，不要自行启动额外临时 Node 容器。
 - 为了让 agent 工作质量更稳定，按改动类型阅读文档：
   - 修改产品行为、新手引导、Gallery、provider 配置或 Agent 工作流前，阅读 `docs/PRODUCT_SENSE.md`。
   - 修改 `apps/web` 中的 UI 前，阅读 `docs/DESIGN.md` 和 `docs/FRONTEND.md`；做 UI polish 或微交互时，阅读 `docs/design-docs/interaction-quality.md`。

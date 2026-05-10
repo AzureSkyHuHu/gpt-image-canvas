@@ -27,14 +27,16 @@ import {
   CosAssetStorageAdapter,
   LocalAssetStorageAdapter,
   MyToolsAssetStorageAdapter,
+  S3AssetStorageAdapter,
   buildCosObjectKey,
   storageErrorMessage,
   type CosAssetLocation,
-  type MyToolsAssetLocation
+  type MyToolsAssetLocation,
+  type S3AssetLocation
 } from "../../infrastructure/storage/asset-storage.js";
 import { runtimePaths } from "../../infrastructure/runtime.js";
 import { assets, generationOutputs, generationRecords, generationReferenceAssets } from "../../infrastructure/schema.js";
-import { getActiveCloudStorageProvider, getActiveCosStorageConfig, getActiveMyToolsStorageConfig } from "../storage/storage-config.js";
+import { getActiveCloudStorageProvider, getActiveCosStorageConfig, getActiveMyToolsStorageConfig, getActiveS3StorageConfig } from "../storage/storage-config.js";
 
 const BATCH_CONCURRENCY = 2;
 const MAX_REFERENCE_IMAGE_BYTES = 50 * 1024 * 1024;
@@ -63,7 +65,7 @@ interface SavedProviderImage {
 }
 
 interface AssetCloudStorageRecord {
-  provider: "cos" | "my_tools";
+  provider: "cos" | "my_tools" | "s3";
   bucket?: string;
   region?: string;
   objectKey: string;
@@ -72,10 +74,14 @@ interface AssetCloudStorageRecord {
   uploadedAt?: string;
   etag?: string;
   requestId?: string;
+  publicUrl?: string;
+  visibility?: "private" | "public";
+  syncedAt?: string;
 }
 
 type CloudAssetLocation =
   | ({ provider: "cos" } & CosAssetLocation)
+  | ({ provider: "s3" } & S3AssetLocation)
   | ({ provider: "my_tools" } & MyToolsAssetLocation);
 
 type PersistedGenerationInput = ImageProviderInput & {
@@ -537,6 +543,9 @@ function saveGenerationRecord(owner: DataOwner, input: PersistedGenerationInput,
           cloudUploadedAt: output.cloudStorage?.uploadedAt ?? null,
           cloudEtag: output.cloudStorage?.etag ?? null,
           cloudRequestId: output.cloudStorage?.requestId ?? null,
+          cloudVisibility: output.cloudStorage?.visibility ?? null,
+          cloudPublicUrl: output.cloudStorage?.publicUrl ?? null,
+          cloudSyncedAt: output.cloudStorage?.syncedAt ?? null,
           createdAt
         })
         .run();
@@ -605,6 +614,9 @@ async function saveAssetToConfiguredCloud(input: {
   if (provider === "my_tools") {
     return saveAssetToMyTools(input);
   }
+  if (provider === "s3") {
+    return saveAssetToS3(input);
+  }
 
   const config = getActiveCosStorageConfig();
   if (!config) {
@@ -634,6 +646,51 @@ async function saveAssetToConfiguredCloud(input: {
   } catch (error) {
     return {
       provider: "cos",
+      bucket: config.bucket,
+      region: config.region,
+      objectKey,
+      status: "failed",
+      error: storageErrorMessage(error)
+    };
+  }
+}
+
+async function saveAssetToS3(input: {
+  owner: DataOwner;
+  assetId: string;
+  fileName: string;
+  bytes: Buffer;
+  mimeType: string;
+  createdAt: string;
+}): Promise<AssetCloudStorageRecord | undefined> {
+  const config = getActiveS3StorageConfig();
+  if (!config) {
+    return undefined;
+  }
+
+  const objectKey = buildCosObjectKey(config.keyPrefix, input.fileName, input.createdAt);
+  const adapter = new S3AssetStorageAdapter(config);
+
+  try {
+    const result = await adapter.putObject({
+      key: objectKey,
+      bytes: input.bytes,
+      mimeType: input.mimeType
+    });
+
+    return {
+      provider: "s3",
+      bucket: config.bucket,
+      region: config.region,
+      objectKey,
+      status: "uploaded",
+      uploadedAt: new Date().toISOString(),
+      etag: result.etag,
+      requestId: result.requestId
+    };
+  } catch (error) {
+    return {
+      provider: "s3",
       bucket: config.bucket,
       region: config.region,
       objectKey,
@@ -678,8 +735,11 @@ async function saveAssetToMyTools(input: {
       provider: "my_tools",
       objectKey: result.archiveId,
       status: "uploaded",
-      uploadedAt: new Date().toISOString(),
-      requestId: result.requestId
+      uploadedAt: result.syncedAt ?? new Date().toISOString(),
+      publicUrl: result.publicUrl,
+      requestId: result.requestId,
+      syncedAt: result.syncedAt,
+      visibility: result.visibility
     };
   } catch (error) {
     return {
@@ -701,6 +761,10 @@ async function readCloudAsset(location: CloudAssetLocation | undefined): Promise
       const config = getActiveMyToolsStorageConfig();
       return config ? await new MyToolsAssetStorageAdapter(config).getObject(location) : undefined;
     }
+    if (location.provider === "s3") {
+      const config = getActiveS3StorageConfig();
+      return config ? await new S3AssetStorageAdapter(config).getObject(location) : undefined;
+    }
 
     const config = getActiveCosStorageConfig();
     return config ? await new CosAssetStorageAdapter(config).getObject(location) : undefined;
@@ -718,6 +782,15 @@ function toCloudAssetLocation(asset: typeof assets.$inferSelect): CloudAssetLoca
     return {
       provider: "my_tools",
       archiveId: asset.cloudObjectKey
+    };
+  }
+
+  if (asset.cloudProvider === "s3" && asset.cloudBucket && asset.cloudRegion) {
+    return {
+      provider: "s3",
+      bucket: asset.cloudBucket,
+      region: asset.cloudRegion,
+      key: asset.cloudObjectKey
     };
   }
 
@@ -742,7 +815,10 @@ function toGeneratedAssetCloud(cloudStorage: AssetCloudStorageRecord | undefined
     provider: cloudStorage.provider,
     status: cloudStorage.status,
     lastError: cloudStorage.error,
-    uploadedAt: cloudStorage.uploadedAt
+    publicUrl: cloudStorage.visibility === "public" ? cloudStorage.publicUrl : undefined,
+    syncedAt: cloudStorage.syncedAt,
+    uploadedAt: cloudStorage.uploadedAt,
+    visibility: cloudStorage.visibility
   };
 }
 

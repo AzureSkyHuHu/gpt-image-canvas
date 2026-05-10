@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { rm, readFile, writeFile } from "node:fs/promises";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client
+} from "@aws-sdk/client-s3";
 import COS from "cos-nodejs-sdk-v5";
 
 export interface AssetStorageAdapter<TPutInput, TLocation> {
@@ -11,6 +17,9 @@ export interface AssetStorageAdapter<TPutInput, TLocation> {
 export interface AssetStoragePutResult {
   etag?: string;
   requestId?: string;
+  publicUrl?: string;
+  visibility?: "private" | "public";
+  syncedAt?: string;
 }
 
 export interface LocalAssetPutInput {
@@ -42,6 +51,28 @@ export interface CosAssetLocation {
   key: string;
 }
 
+export interface S3StorageAdapterConfig {
+  accessKeyId: string;
+  secretAccessKey: string;
+  bucket: string;
+  region: string;
+  endpoint?: string;
+  keyPrefix: string;
+  forcePathStyle: boolean;
+}
+
+export interface S3AssetPutInput {
+  key: string;
+  bytes: Buffer;
+  mimeType: string;
+}
+
+export interface S3AssetLocation {
+  bucket: string;
+  region: string;
+  key: string;
+}
+
 export interface MyToolsStorageAdapterConfig {
   baseUrl: string;
   sharedSecret: string;
@@ -65,6 +96,30 @@ export interface MyToolsAssetPutInput {
 
 export interface MyToolsAssetLocation {
   archiveId: string;
+}
+
+export interface MyToolsAssetStatus {
+  archiveId: string;
+  status: "uploaded" | "missing" | "deleted" | "failed";
+  readable: boolean;
+  visibility: "private" | "public";
+  publicUrl?: string;
+  syncedAt?: string;
+  sizeBytes?: number;
+  mimeType?: string;
+  requestId?: string;
+}
+
+export interface MyToolsRefreshUrlInput extends MyToolsAssetLocation {
+  ttlSeconds?: number;
+  visibility?: "private" | "public";
+}
+
+export interface MyToolsRefreshUrlResult {
+  publicUrl: string;
+  visibility: "private" | "public";
+  expiresAt?: string;
+  requestId?: string;
 }
 
 export class LocalAssetStorageAdapter implements AssetStorageAdapter<LocalAssetPutInput, LocalAssetLocation> {
@@ -167,15 +222,61 @@ export class MyToolsAssetStorageAdapter implements AssetStorageAdapter<MyToolsAs
       throw new Error(await responseErrorMessage(response, "my_tools asset upload failed."));
     }
 
-    const data = (await response.json()) as { archiveId?: unknown; requestId?: unknown };
+    const data = (await response.json()) as {
+      archiveId?: unknown;
+      publicUrl?: unknown;
+      requestId?: unknown;
+      syncedAt?: unknown;
+      visibility?: unknown;
+    };
     if (typeof data.archiveId !== "string" || !data.archiveId.trim()) {
       throw new Error("my_tools asset upload returned no archiveId.");
     }
 
     return {
       archiveId: data.archiveId,
-      requestId: typeof data.requestId === "string" ? data.requestId : undefined
+      publicUrl: safeHttpUrl(data.publicUrl),
+      requestId: typeof data.requestId === "string" ? data.requestId : undefined,
+      syncedAt: typeof data.syncedAt === "string" ? data.syncedAt : undefined,
+      visibility: data.visibility === "public" ? "public" : data.visibility === "private" ? "private" : undefined
     };
+  }
+
+  async getStatus(location: MyToolsAssetLocation): Promise<MyToolsAssetStatus> {
+    const response = await fetch(`${this.baseUrl}/api/internal/gic/assets/${encodeURIComponent(location.archiveId)}/status`, {
+      method: "GET",
+      headers: {
+        ...this.authHeaders(),
+        Accept: "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, "my_tools asset status failed."));
+    }
+
+    return parseMyToolsAssetStatus(await response.json(), location.archiveId);
+  }
+
+  async refreshUrl(input: MyToolsRefreshUrlInput): Promise<MyToolsRefreshUrlResult> {
+    const response = await fetch(`${this.baseUrl}/api/internal/gic/assets/${encodeURIComponent(input.archiveId)}/refresh-url`, {
+      method: "POST",
+      headers: {
+        ...this.authHeaders(),
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ttlSeconds: input.ttlSeconds,
+        visibility: input.visibility
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, "my_tools asset URL refresh failed."));
+    }
+
+    return parseMyToolsRefreshUrlResult(await response.json());
   }
 
   async getObject(location: MyToolsAssetLocation): Promise<Buffer> {
@@ -220,6 +321,159 @@ export class MyToolsAssetStorageAdapter implements AssetStorageAdapter<MyToolsAs
     return {
       "X-GIC-Storage-Key": this.config.sharedSecret
     };
+  }
+}
+
+export class S3AssetStorageAdapter implements AssetStorageAdapter<S3AssetPutInput, S3AssetLocation> {
+  private readonly client: S3Client;
+
+  constructor(private readonly config: S3StorageAdapterConfig) {
+    this.client = new S3Client({
+      credentials: {
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey
+      },
+      endpoint: config.endpoint || undefined,
+      forcePathStyle: config.forcePathStyle,
+      region: config.region
+    });
+  }
+
+  async putObject(input: S3AssetPutInput): Promise<AssetStoragePutResult> {
+    const result = await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.config.bucket,
+        Key: input.key,
+        Body: input.bytes,
+        ContentLength: input.bytes.length,
+        ContentType: input.mimeType
+      })
+    );
+
+    return {
+      etag: result.ETag,
+      requestId: result.$metadata.requestId
+    };
+  }
+
+  async getObject(location: S3AssetLocation): Promise<Buffer> {
+    const result = await this.clientForLocation(location).send(
+      new GetObjectCommand({
+        Bucket: location.bucket,
+        Key: location.key
+      })
+    );
+
+    if (!result.Body) {
+      return Buffer.alloc(0);
+    }
+
+    return Buffer.from(await result.Body.transformToByteArray());
+  }
+
+  async deleteObject(location: S3AssetLocation): Promise<void> {
+    await this.clientForLocation(location).send(
+      new DeleteObjectCommand({
+        Bucket: location.bucket,
+        Key: location.key
+      })
+    );
+  }
+
+  private clientForLocation(location: S3AssetLocation): S3Client {
+    return location.region === this.config.region
+      ? this.client
+      : new S3Client({
+          credentials: {
+            accessKeyId: this.config.accessKeyId,
+            secretAccessKey: this.config.secretAccessKey
+          },
+          endpoint: this.config.endpoint || undefined,
+          forcePathStyle: this.config.forcePathStyle,
+          region: location.region
+        });
+  }
+
+  async testConfig(): Promise<void> {
+    const key = buildCosObjectKey(this.config.keyPrefix, `.storage-test-${randomUUID()}.txt`, new Date().toISOString());
+    await this.putObject({
+      key,
+      bytes: Buffer.from("gpt-image-canvas storage test\n", "utf8"),
+      mimeType: "text/plain; charset=utf-8"
+    });
+    await this.deleteObject({
+      bucket: this.config.bucket,
+      region: this.config.region,
+      key
+    });
+  }
+}
+
+function parseMyToolsAssetStatus(input: unknown, fallbackArchiveId: string): MyToolsAssetStatus {
+  if (!isRecord(input)) {
+    throw new Error("my_tools asset status returned invalid data.");
+  }
+
+  const status = stringValue(input.status);
+  if (status !== "uploaded" && status !== "missing" && status !== "deleted" && status !== "failed") {
+    throw new Error("my_tools asset status returned invalid status.");
+  }
+
+  const visibility = stringValue(input.visibility) === "public" ? "public" : "private";
+  return {
+    archiveId: stringValue(input.archiveId) || fallbackArchiveId,
+    status,
+    readable: input.readable === true,
+    visibility,
+    publicUrl: safeHttpUrl(input.publicUrl),
+    syncedAt: stringValue(input.syncedAt),
+    sizeBytes: numberValue(input.sizeBytes),
+    mimeType: stringValue(input.mimeType),
+    requestId: stringValue(input.requestId)
+  };
+}
+
+function parseMyToolsRefreshUrlResult(input: unknown): MyToolsRefreshUrlResult {
+  if (!isRecord(input)) {
+    throw new Error("my_tools URL refresh returned invalid data.");
+  }
+
+  const publicUrl = safeHttpUrl(input.publicUrl);
+  if (!publicUrl) {
+    throw new Error("my_tools URL refresh returned no publicUrl.");
+  }
+
+  return {
+    publicUrl,
+    visibility: stringValue(input.visibility) === "public" ? "public" : "private",
+    expiresAt: stringValue(input.expiresAt),
+    requestId: stringValue(input.requestId)
+  };
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === "object" && input !== null && !Array.isArray(input);
+}
+
+function stringValue(input: unknown): string | undefined {
+  return typeof input === "string" && input.trim() ? input.trim() : undefined;
+}
+
+function numberValue(input: unknown): number | undefined {
+  return typeof input === "number" && Number.isFinite(input) && input >= 0 ? input : undefined;
+}
+
+function safeHttpUrl(input: unknown): string | undefined {
+  const value = stringValue(input);
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
   }
 }
 

@@ -1,5 +1,6 @@
 import type {
-  AssetCloudUploadStatus,
+  AssetCloudStatus,
+  AssetCloudVisibility,
   CloudStorageProvider,
   GenerationCount,
   GenerationStatus,
@@ -171,9 +172,32 @@ export interface GeneratedAsset {
 
 export interface GeneratedAssetCloudInfo {
   provider: CloudStorageProvider;
-  status: AssetCloudUploadStatus;
+  status: AssetCloudStatus;
   lastError?: string;
   uploadedAt?: string;
+  syncedAt?: string;
+  visibility?: AssetCloudVisibility;
+  publicUrl?: string;
+  readable?: boolean;
+}
+
+export interface AssetCloudStatusResponse {
+  assetId: string;
+  provider?: CloudStorageProvider;
+  status: AssetCloudStatus;
+  readable: boolean;
+  visibility: AssetCloudVisibility;
+  publicUrl?: string;
+  syncedAt?: string;
+  sizeBytes?: number;
+  mimeType?: string;
+  requestId?: string;
+  lastError?: string;
+}
+
+export interface AssetCloudActionResponse {
+  cloud: AssetCloudStatusResponse;
+  message: string;
 }
 
 export interface GenerationOutput {

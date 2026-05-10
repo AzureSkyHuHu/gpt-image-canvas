@@ -128,6 +128,20 @@
     grid-template-columns: repeat(4, minmax(2.75rem, 1fr));
   }
 
+  .gallery-cloud {
+    grid-template-columns: 1fr;
+  }
+
+  .gallery-cloud__actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    justify-content: stretch;
+  }
+
+  .gallery-cloud__button {
+    min-height: 2.35rem;
+  }
+
   .gallery-icon-action {
     width: 100%;
     min-height: 2.75rem;
